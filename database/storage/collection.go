@@ -32,7 +32,7 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 	defer c.mutex.Unlock()
 
 	if _, exists := c.data[id]; exists {
-		return errors.New("document already exists")
+		return nil
 	}
 
 	c.data[id] = doc
@@ -41,7 +41,6 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 		return err
 	}
 
-	// Guardar la colección en el archivo JSON
 	if err := c.db.SaveCollection(c); err != nil {
 		return err
 	}
@@ -106,7 +105,9 @@ func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 	var foundDocs []*document.Document
 
 	if indexToUse != nil {
+		fmt.Println("Using index for query")
 		docIDs, err := indexToUse.Find(q)
+		fmt.Println(docIDs)
 		if err != nil {
 			return nil, fmt.Errorf("error finding documents using index: %w", err)
 		}
@@ -118,6 +119,7 @@ func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 			}
 		}
 	} else {
+		fmt.Println("No index found for query, performing full collection scan")
 		for _, doc := range c.data {
 			if q.Matches(doc) {
 				foundDocs = append(foundDocs, doc)
