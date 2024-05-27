@@ -2,7 +2,7 @@ package indexing
 
 import (
 	"fmt"
-	"strings"
+	"reflect"
 
 	"github.com/bypepe77/ZenithDB/database/document"
 	"github.com/bypepe77/ZenithDB/database/query"
@@ -34,6 +34,16 @@ func NewIndex(field string, options *IndexOptions) *Index {
 
 func lessIndexEntry(a, b *indexEntry) bool {
 	return fmt.Sprintf("%v", a.Value) < fmt.Sprintf("%v", b.Value)
+}
+
+func (i *Index) CanUseIndex(q *query.Query) bool {
+	for _, condition := range q.Conditions {
+		if condition.Field == i.Field {
+			fmt.Println("Checking index:", i.Field)
+			return true
+		}
+	}
+	return false
 }
 
 func (i *Index) Insert(doc *document.Document) error {
@@ -93,27 +103,19 @@ func (i *Index) Find(q *query.Query) ([]string, error) {
 }
 
 func getFieldValue(data interface{}, field string) (interface{}, error) {
-	value := getFieldValueByPath(data, field)
-	if value == nil {
+	v := reflect.ValueOf(data)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	if v.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("data must be a struct or a pointer to a struct")
+	}
+
+	fieldValue := v.FieldByName(field)
+	if !fieldValue.IsValid() {
 		return nil, fmt.Errorf("field '%s' not found", field)
 	}
-	return value, nil
-}
 
-func getFieldValueByPath(data interface{}, path string) interface{} {
-	fields := strings.Split(path, ".")
-	value := data
-
-	for _, field := range fields {
-		if m, ok := value.(map[string]interface{}); ok {
-			value, ok = m[field]
-			if !ok {
-				return nil
-			}
-		} else {
-			return nil
-		}
-	}
-
-	return value
+	return fieldValue.Interface(), nil
 }

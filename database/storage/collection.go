@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/bypepe77/ZenithDB/database/document"
@@ -31,10 +32,12 @@ func (c *Collection) CreateIndex(field string, options *indexing.IndexOptions) e
 	defer c.mutex.Unlock()
 
 	if _, exists := c.indexes[field]; exists {
+		fmt.Println("Index already exists for field", field)
 		return fmt.Errorf("index already exists for field %s", field)
 	}
 
 	index := indexing.NewIndex(field, options)
+	fmt.Println("Created index for field", field)
 	c.indexes[field] = index
 
 	for _, doc := range c.data {
@@ -57,7 +60,14 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 	// Agregar el documento a la memoria
 	c.data[id] = doc
 
-	// Insertar el documento en los índices
+	// Crear los índices automáticamente basándose en las etiquetas del modelo
+	err := c.CreateIndexesFromModel(doc)
+	if err != nil {
+		fmt.Println("Error creating indexes from model:", err)
+		return err
+	}
+
+	// Insertar el documento en los índices existentes
 	for _, index := range c.indexes {
 		if err := index.Insert(doc); err != nil {
 			return err
@@ -71,6 +81,7 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 
 	return nil
 }
+
 func (c *Collection) Delete(id string) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -104,27 +115,41 @@ func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 
 	var foundDocs []*document.Document
 
+	// Buscar en los índices
 	for _, index := range c.indexes {
-		docIDs, err := index.Find(q)
-		if err != nil {
-			return nil, err
-		}
+		fmt.Println("Checking index:", index.Field)
 
-		for _, docID := range docIDs {
-			doc, exists := c.data[docID]
-			if exists {
-				foundDocs = append(foundDocs, doc)
+		if index.CanUseIndex(q) {
+			docIDs, err := index.Find(q)
+			if err != nil {
+				return nil, err
 			}
+
+			for _, docID := range docIDs {
+				doc, exists := c.data[docID]
+				if exists {
+					foundDocs = append(foundDocs, doc)
+				}
+			}
+
+			// Si se encontraron documentos en el índice, no es necesario realizar una búsqueda completa
+			if len(foundDocs) > 0 {
+				fmt.Println("Found documents using index:", index.Field)
+				return foundDocs, nil
+			}
+		}
+	}
+
+	// Si no se encontraron documentos en los índices, realizar una búsqueda completa
+	fmt.Println("No suitable index found, performing full collection scan")
+	for _, doc := range c.data {
+		if q.Matches(doc) {
+			foundDocs = append(foundDocs, doc)
 		}
 	}
 
 	if len(foundDocs) == 0 {
 		fmt.Println("No documents found")
-		for _, doc := range c.data {
-			if q.Matches(doc) {
-				foundDocs = append(foundDocs, doc)
-			}
-		}
 	}
 
 	return foundDocs, nil
@@ -167,6 +192,98 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 	// Guardar la colección en el archivo
 	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (c *Collection) CreateIndexesFromModel(model interface{}) error {
+	v := reflect.ValueOf(model)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	if v.Kind() != reflect.Struct {
+		return fmt.Errorf("model must be a struct or a pointer to a struct")
+	}
+
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		if value := field.Tag.Get("index"); value == "true" {
+			options := &indexing.IndexOptions{
+				Unique: false,
+			}
+			err := c.CreateIndex(field.Name, options)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// BulkInsert inserts multiple documents into the collection in batches.
+func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error {
+	var wg sync.WaitGroup
+	numBatches := (len(docs) + batchSize - 1) / batchSize
+
+	errChan := make(chan error, numBatches)
+	defer close(errChan)
+
+	for i := 0; i < numBatches; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(docs) {
+			end = len(docs)
+		}
+
+		wg.Add(1)
+		go func(batch []*document.Document) {
+			defer wg.Done()
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+
+			for _, doc := range batch {
+				id := doc.ID
+
+				if _, exists := c.data[id]; exists {
+					errChan <- fmt.Errorf("document with ID %s already exists", id)
+					return
+				}
+
+				// Add the document to memory
+				c.data[id] = doc
+			}
+		}(docs[start:end])
+	}
+
+	wg.Wait()
+
+	// Check for errors
+	select {
+	case err := <-errChan:
+		return err
+	default:
+	}
+
+	// Save the collection to the file once
+	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
+		return err
+	}
+
+	// Create indexes after bulk insertion
+	for _, doc := range docs {
+		if err := c.CreateIndexesFromModel(doc); err != nil {
+			fmt.Println("Error creating indexes from model:", err)
+			return err
+		}
+		for _, index := range c.indexes {
+			if err := index.Insert(doc); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

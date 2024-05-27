@@ -30,7 +30,7 @@ type Collection struct {
 }
 
 // CreateCollection creates a new collection in the database or returns the existing one.
-func (db *ZenithDB) CreateCollection(name string) (*Collection, error) {
+func (db *ZenithDB) CreateCollection(name string, model interface{}) (*Collection, error) {
 	db.mutex.Lock()
 	defer db.mutex.Unlock()
 
@@ -38,6 +38,11 @@ func (db *ZenithDB) CreateCollection(name string) (*Collection, error) {
 	collection, err := db.storage.CreateCollection(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create collection in storage: %w", err)
+	}
+
+	err = collection.CreateIndexesFromModel(model)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create indexes from model: %w", err)
 	}
 
 	return &Collection{
@@ -87,4 +92,8 @@ func (c *Collection) Delete(id string) error {
 // Find performs a search operation on the collection using the provided query.
 func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 	return c.collection.Find(q)
+}
+
+func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error {
+	return c.collection.BulkInsert(docs, batchSize)
 }
