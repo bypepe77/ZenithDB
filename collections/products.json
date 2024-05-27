@@ -1,0 +1,11 @@
+{
+  "doc-3": {
+    "id": "doc-3",
+    "data": {
+      "id": "product-2",
+      "name": "Example Product",
+      "description": "An example product for demonstration purposes",
+      "price": 9.99
+    }
+  }
+}
