@@ -195,8 +195,6 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 }
 
 func (c *Collection) CreateIndexesFromModel(model interface{}) error {
-	fmt.Printf("Model inside CreateIndexesFromModel: %+v\n", model)
-
 	// Get the value of the model
 	modelValue := reflect.ValueOf(model)
 

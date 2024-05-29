@@ -107,8 +107,8 @@ func (ms *MemoryStorage) GetCollection(name string) (*Collection, error) {
 	defer ms.mutex.RUnlock()
 
 	collection, exists := ms.collections[name]
-	if !exists {
-		return nil, fmt.Errorf("collection '%s' not found", name)
+	if exists {
+		return collection, nil
 	}
 
 	return collection, nil
