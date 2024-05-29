@@ -76,6 +76,7 @@ func (c *Condition) Matches(doc *document.Document) bool {
 
 func getFieldValue(data interface{}, path string) interface{} {
 	result := gjson.GetBytes(toJSON(data), path)
+
 	if result.Exists() {
 		return result.Value()
 	}

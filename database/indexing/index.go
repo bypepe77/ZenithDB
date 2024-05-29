@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 
+	"sync"
+
 	"github.com/bypepe77/ZenithDB/database/document"
 	"github.com/bypepe77/ZenithDB/database/query"
 	"github.com/google/btree"
@@ -13,6 +15,7 @@ type Index struct {
 	Field   string
 	Options *IndexOptions
 	Tree    *btree.BTreeG[*indexEntry]
+	mu      sync.RWMutex
 }
 
 type indexEntry struct {
@@ -33,13 +36,21 @@ func NewIndex(field string, options *IndexOptions) *Index {
 }
 
 func lessIndexEntry(a, b *indexEntry) bool {
-	return fmt.Sprintf("%v", a.Value) < fmt.Sprintf("%v", b.Value)
+	switch aValue := a.Value.(type) {
+	case int:
+		return aValue < b.Value.(int)
+	case float64:
+		return aValue < b.Value.(float64)
+	case string:
+		return aValue < b.Value.(string)
+	default:
+		return fmt.Sprintf("%v", a.Value) < fmt.Sprintf("%v", b.Value)
+	}
 }
 
 func (i *Index) CanUseIndex(q *query.Query) bool {
 	for _, condition := range q.Conditions {
 		if condition.Field == i.Field {
-			fmt.Println("Checking index:", i.Field)
 			return true
 		}
 	}
@@ -47,8 +58,12 @@ func (i *Index) CanUseIndex(q *query.Query) bool {
 }
 
 func (i *Index) Insert(doc *document.Document) error {
-	value, err := getFieldValue(doc.Data, i.Field)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	value, err := getFieldValue(doc, i.Field)
 	if err != nil {
+		fmt.Println("Error getting field value:", err)
 		return err
 	}
 
@@ -66,6 +81,9 @@ func (i *Index) Insert(doc *document.Document) error {
 }
 
 func (i *Index) Delete(doc *document.Document) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
 	value, err := getFieldValue(doc.Data, i.Field)
 	if err != nil {
 		return err
@@ -81,6 +99,9 @@ func (i *Index) Delete(doc *document.Document) error {
 }
 
 func (i *Index) Find(q *query.Query) ([]string, error) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
 	var docIDs []string
 
 	for _, condition := range q.Conditions {
@@ -105,6 +126,9 @@ func (i *Index) Find(q *query.Query) ([]string, error) {
 func getFieldValue(data interface{}, field string) (interface{}, error) {
 	v := reflect.ValueOf(data)
 	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return nil, fmt.Errorf("data is a nil pointer")
+		}
 		v = v.Elem()
 	}
 
