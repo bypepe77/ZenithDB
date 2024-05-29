@@ -3,6 +3,7 @@ package indexing
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"sync"
 
@@ -61,7 +62,7 @@ func (i *Index) Insert(doc *document.Document) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	value, err := getFieldValue(doc, i.Field)
+	value, err := getFieldValue(doc.Data, i.Field)
 	if err != nil {
 		fmt.Println("Error getting field value:", err)
 		return err
@@ -132,14 +133,32 @@ func getFieldValue(data interface{}, field string) (interface{}, error) {
 		v = v.Elem()
 	}
 
-	if v.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("data must be a struct or a pointer to a struct")
+	if v.Kind() == reflect.Map {
+		// Handle map type
+		mapValue := v.Interface().(map[string]interface{})
+		value, exists := mapValue[field]
+		if !exists {
+			// Try converting the field to lowercase
+			field = strings.ToLower(field)
+			value, exists = mapValue[field]
+			if !exists {
+				return nil, fmt.Errorf("field '%s' not found in map", field)
+			}
+		}
+		return value, nil
+	} else if v.Kind() == reflect.Struct {
+		// Handle struct type
+		fieldValue := v.FieldByName(field)
+		if !fieldValue.IsValid() {
+			// Try converting the field to lowercase
+			field = strings.ToLower(field)
+			fieldValue = v.FieldByName(field)
+			if !fieldValue.IsValid() {
+				return nil, fmt.Errorf("field '%s' not found in struct", field)
+			}
+		}
+		return fieldValue.Interface(), nil
+	} else {
+		return nil, fmt.Errorf("unsupported data type: %v", v.Kind())
 	}
-
-	fieldValue := v.FieldByName(field)
-	if !fieldValue.IsValid() {
-		return nil, fmt.Errorf("field '%s' not found", field)
-	}
-
-	return fieldValue.Interface(), nil
 }

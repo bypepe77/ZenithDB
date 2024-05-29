@@ -106,7 +106,7 @@ func getProductByName(w http.ResponseWriter, r *http.Request) {
 	startQuery := time.Now()
 
 	// Query the product by name
-	q := query.NewQuery().Where("name", query.OpEqual, name)
+	q := query.NewQuery().Where("Name", query.OpEqual, name)
 	docs, err := productsCollection.Find(q)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error querying documents: %v", err), http.StatusInternalServerError)
