@@ -32,16 +32,15 @@ func (c *Collection) CreateIndex(field string, options *indexing.IndexOptions) e
 	defer c.mutex.Unlock()
 
 	if _, exists := c.indexes[field]; exists {
-		fmt.Println("Index already exists for field", field)
 		return fmt.Errorf("index already exists for field %s", field)
 	}
 
 	index := indexing.NewIndex(field, options)
-	fmt.Println("Created index for field", field)
 	c.indexes[field] = index
 
 	for _, doc := range c.data {
 		if err := index.Insert(doc); err != nil {
+			fmt.Println("Error inserting document into index:", err)
 			return err
 		}
 	}
@@ -54,27 +53,23 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 	defer c.mutex.Unlock()
 
 	if _, exists := c.data[id]; exists {
-		return fmt.Errorf("document with ID %s already exists", id)
+		return nil
 	}
 
-	// Agregar el documento a la memoria
 	c.data[id] = doc
 
-	// Crear los índices automáticamente basándose en las etiquetas del modelo
 	err := c.CreateIndexesFromModel(doc)
 	if err != nil {
 		fmt.Println("Error creating indexes from model:", err)
 		return err
 	}
 
-	// Insertar el documento en los índices existentes
 	for _, index := range c.indexes {
 		if err := index.Insert(doc); err != nil {
 			return err
 		}
 	}
 
-	// Guardar la colección en el archivo
 	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
 		return err
 	}
@@ -159,6 +154,8 @@ func (c *Collection) Get(id string) (*document.Document, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
+	fmt.Println("Getting document with ID", id)
+	fmt.Println("Collection data:", c.data)
 	doc, exists := c.data[id]
 	if !exists {
 		return nil, fmt.Errorf("document with ID %s not found", id)
@@ -198,24 +195,34 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 }
 
 func (c *Collection) CreateIndexesFromModel(model interface{}) error {
-	v := reflect.ValueOf(model)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
+	// Get the value of the model
+	modelValue := reflect.ValueOf(model)
+
+	// Check if the model is a pointer
+	if modelValue.Kind() == reflect.Ptr {
+		if modelValue.IsNil() {
+			return fmt.Errorf("model is a nil pointer")
+		}
+		// Get the underlying value of the pointer
+		modelValue = modelValue.Elem()
 	}
 
-	if v.Kind() != reflect.Struct {
+	// Check if the model is a struct
+	if modelValue.Kind() != reflect.Struct {
 		return fmt.Errorf("model must be a struct or a pointer to a struct")
 	}
 
-	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
+	// Iterate over the fields of the model
+	for i := 0; i < modelValue.NumField(); i++ {
+		field := modelValue.Type().Field(i)
 		if value := field.Tag.Get("index"); value == "true" {
+			fmt.Println("Creating index for field", field.Name)
 			options := &indexing.IndexOptions{
 				Unique: false,
 			}
 			err := c.CreateIndex(field.Name, options)
 			if err != nil {
+				fmt.Println("Error creating index:", err)
 				return err
 			}
 		}
@@ -249,7 +256,7 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 				id := doc.ID
 
 				if _, exists := c.data[id]; exists {
-					errChan <- fmt.Errorf("document with ID %s already exists", id)
+					errChan <- nil
 					return
 				}
 
@@ -281,6 +288,40 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 		}
 		for _, index := range c.indexes {
 			if err := index.Insert(doc); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (c *Collection) GetIndexes() map[string]*indexing.Index {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	return c.indexes
+}
+
+func (c *Collection) GetDocuments() map[string]*document.Document {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	return c.data
+}
+
+func (c *Collection) ApplyIndexesFromModel(model interface{}) error {
+	fmt.Println("Applying indexes from model")
+	fmt.Printf("Model inside ApplyIndexesFromModel: %+v\n", model)
+	err := c.CreateIndexesFromModel(model)
+	if err != nil {
+		return err
+	}
+
+	for _, doc := range c.data {
+		for _, index := range c.indexes {
+			if err := index.Insert(doc); err != nil {
+				fmt.Println("Error inserting document into index:", err)
 				return err
 			}
 		}

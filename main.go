@@ -43,12 +43,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	product := &Product{}
+	fmt.Println("Registering model for collection 'products'")
+	memStorage.RegisterModel("products", product)
+
+	err = memStorage.LoadExistingCollections()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Create a new ZenithDB instance
 	db := zenithdb.New(memStorage)
 
 	// Create a collection named "products"
-	productsCollection, err = db.CreateCollection("products", Product{})
+	productsCollection, err = db.CreateCollection("products")
 	if err != nil {
 		fmt.Println("Error creating collection:", err)
 		log.Fatal(err)
@@ -56,7 +64,7 @@ func main() {
 
 	// Prepare 200k documents for bulk insertion
 	var docs []*document.Document
-	for i := 1; i <= 1000000; i++ {
+	for i := 1; i <= 200000; i++ {
 		productID := "product-" + strconv.Itoa(i)
 		productName := "Product " + strconv.Itoa(i)
 		productDescription := "Description for product " + strconv.Itoa(i)
