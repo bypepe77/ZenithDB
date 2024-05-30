@@ -216,13 +216,11 @@ func (c *Collection) CreateIndexesFromModel(model interface{}) error {
 	for i := 0; i < modelValue.NumField(); i++ {
 		field := modelValue.Type().Field(i)
 		if value := field.Tag.Get("index"); value == "true" {
-			fmt.Println("Creating index for field", field.Name)
 			options := &indexing.IndexOptions{
 				Unique: false,
 			}
 			err := c.CreateIndex(field.Name, options)
 			if err != nil {
-				fmt.Println("Error creating index:", err)
 				return err
 			}
 		}
@@ -311,8 +309,6 @@ func (c *Collection) GetDocuments() map[string]*document.Document {
 }
 
 func (c *Collection) ApplyIndexesFromModel(model interface{}) error {
-	fmt.Println("Applying indexes from model")
-	fmt.Printf("Model inside ApplyIndexesFromModel: %+v\n", model)
 	err := c.CreateIndexesFromModel(model)
 	if err != nil {
 		return err
@@ -321,7 +317,6 @@ func (c *Collection) ApplyIndexesFromModel(model interface{}) error {
 	for _, doc := range c.data {
 		for _, index := range c.indexes {
 			if err := index.Insert(doc); err != nil {
-				fmt.Println("Error inserting document into index:", err)
 				return err
 			}
 		}

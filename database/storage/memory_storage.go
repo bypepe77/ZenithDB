@@ -35,7 +35,6 @@ func (ms *MemoryStorage) RegisterModel(collectionName string, model interface{})
 	ms.mutex.Lock()
 	defer ms.mutex.Unlock()
 	ms.models[collectionName] = model
-	fmt.Printf("Registered model for collection %s: %+v\n", collectionName, model)
 }
 
 func (ms *MemoryStorage) GetModel(collectionName string) interface{} {
@@ -46,7 +45,6 @@ func (ms *MemoryStorage) GetModel(collectionName string) interface{} {
 		fmt.Printf("No model registered for collection %s\n", collectionName)
 		return nil
 	}
-	fmt.Printf("Retrieved model for collection %s: %+v\n", collectionName, model)
 	return model
 }
 
@@ -76,9 +74,6 @@ func (ms *MemoryStorage) LoadExistingCollections() error {
 
 		ms.collections[collectionName] = collectionInstance
 		model := ms.GetModel(collectionName)
-		fmt.Printf("Model to send into apply index: %+v\n", model)
-		fmt.Printf("Type of model: %T\n", model)
-		fmt.Printf("Model before calling ApplyIndexesFromModel: %+v\n", model)
 		err = collectionInstance.ApplyIndexesFromModel(model)
 		if err != nil {
 			return fmt.Errorf("failed to apply indexes from model: %v", err)
