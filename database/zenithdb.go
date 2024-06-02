@@ -54,7 +54,7 @@ func (db *ZenithDB) CreateCollection(name string) (*Collection, error) {
 	}
 
 	model := db.storage.GetModel(name)
-	err = collection.CreateIndexesFromModel(model)
+	err = collection.ApplyIndexesFromModel(model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create indexes from model: %w", err)
 	}

@@ -2,6 +2,7 @@ package query
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 
 	"github.com/bypepe77/ZenithDB/database/document"
@@ -62,13 +63,17 @@ func (c *Condition) Matches(doc *document.Document) bool {
 	case OpNotEqual:
 		return !reflect.DeepEqual(value, c.Value)
 	case OpGreaterThan:
-		return compare(value, c.Value) > 0
+		result, err := compare(value, c.Value)
+		return err == nil && result > 0
 	case OpGreaterEqual:
-		return compare(value, c.Value) >= 0
+		result, err := compare(value, c.Value)
+		return err == nil && result >= 0
 	case OpLessThan:
-		return compare(value, c.Value) < 0
+		result, err := compare(value, c.Value)
+		return err == nil && result < 0
 	case OpLessEqual:
-		return compare(value, c.Value) <= 0
+		result, err := compare(value, c.Value)
+		return err == nil && result <= 0
 	default:
 		return false
 	}
@@ -84,24 +89,67 @@ func getFieldValue(data interface{}, path string) interface{} {
 }
 
 func toJSON(data interface{}) []byte {
-	jsonData, _ := json.Marshal(data)
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil
+	}
 	return jsonData
 }
 
-func compare(a, b interface{}) int {
-	aInt, ok := a.(int)
-	if !ok {
-		return 0
+func compare(a, b interface{}) (int, error) {
+	v1 := reflect.ValueOf(a)
+	v2 := reflect.ValueOf(b)
+
+	if v1.Type() != v2.Type() {
+		return 0, errors.New("type mismatch")
 	}
-	bInt, ok := b.(int)
-	if !ok {
-		return 0
-	}
-	if aInt < bInt {
-		return -1
-	} else if aInt > bInt {
-		return 1
-	} else {
-		return 0
+
+	switch v1.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		aInt := v1.Int()
+		bInt := v2.Int()
+		switch {
+		case aInt < bInt:
+			return -1, nil
+		case aInt > bInt:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		aUint := v1.Uint()
+		bUint := v2.Uint()
+		switch {
+		case aUint < bUint:
+			return -1, nil
+		case aUint > bUint:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case reflect.Float32, reflect.Float64:
+		aFloat := v1.Float()
+		bFloat := v2.Float()
+		switch {
+		case aFloat < bFloat:
+			return -1, nil
+		case aFloat > bFloat:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case reflect.String:
+		aStr := v1.String()
+		bStr := v2.String()
+		switch {
+		case aStr < bStr:
+			return -1, nil
+		case aStr > bStr:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	default:
+		return 0, errors.New("unsupported type")
 	}
 }

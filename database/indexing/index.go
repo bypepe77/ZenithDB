@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-
 	"sync"
 
 	"github.com/bypepe77/ZenithDB/database/document"
@@ -28,6 +27,7 @@ type IndexOptions struct {
 	Unique bool `json:"unique"`
 }
 
+// NewIndex creates a new Index instance.
 func NewIndex(field string, options *IndexOptions) *Index {
 	return &Index{
 		Field:   field,
@@ -36,6 +36,7 @@ func NewIndex(field string, options *IndexOptions) *Index {
 	}
 }
 
+// lessIndexEntry defines the comparison function for index entries.
 func lessIndexEntry(a, b *indexEntry) bool {
 	switch aValue := a.Value.(type) {
 	case int:
@@ -49,6 +50,7 @@ func lessIndexEntry(a, b *indexEntry) bool {
 	}
 }
 
+// CanUseIndex checks if the index can be used for the given query.
 func (i *Index) CanUseIndex(q *query.Query) bool {
 	for _, condition := range q.Conditions {
 		if condition.Field == i.Field {
@@ -58,6 +60,7 @@ func (i *Index) CanUseIndex(q *query.Query) bool {
 	return false
 }
 
+// Insert inserts a new document into the index.
 func (i *Index) Insert(doc *document.Document) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -81,6 +84,7 @@ func (i *Index) Insert(doc *document.Document) error {
 	return nil
 }
 
+// Delete removes a document from the index.
 func (i *Index) Delete(doc *document.Document) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -99,6 +103,7 @@ func (i *Index) Delete(doc *document.Document) error {
 	return nil
 }
 
+// Find retrieves document IDs that match the query conditions.
 func (i *Index) Find(q *query.Query) ([]string, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -124,6 +129,7 @@ func (i *Index) Find(q *query.Query) ([]string, error) {
 	return docIDs, nil
 }
 
+// getFieldValue retrieves the value of a field from the document data.
 func getFieldValue(data interface{}, field string) (interface{}, error) {
 	v := reflect.ValueOf(data)
 	if v.Kind() == reflect.Ptr {
@@ -133,32 +139,41 @@ func getFieldValue(data interface{}, field string) (interface{}, error) {
 		v = v.Elem()
 	}
 
-	if v.Kind() == reflect.Map {
-		// Handle map type
-		mapValue := v.Interface().(map[string]interface{})
-		value, exists := mapValue[field]
-		if !exists {
-			// Try converting the field to lowercase
-			field = strings.ToLower(field)
-			value, exists = mapValue[field]
-			if !exists {
-				return nil, fmt.Errorf("field '%s' not found in map", field)
-			}
-		}
-		return value, nil
-	} else if v.Kind() == reflect.Struct {
-		// Handle struct type
-		fieldValue := v.FieldByName(field)
-		if !fieldValue.IsValid() {
-			// Try converting the field to lowercase
-			field = strings.ToLower(field)
-			fieldValue = v.FieldByName(field)
-			if !fieldValue.IsValid() {
-				return nil, fmt.Errorf("field '%s' not found in struct", field)
-			}
-		}
-		return fieldValue.Interface(), nil
-	} else {
+	switch v.Kind() {
+	case reflect.Map:
+		return getFieldValueFromMap(v, field)
+	case reflect.Struct:
+		return getFieldValueFromStruct(v, field)
+	default:
 		return nil, fmt.Errorf("unsupported data type: %v", v.Kind())
 	}
+}
+
+// getFieldValueFromMap retrieves the value of a field from a map.
+func getFieldValueFromMap(v reflect.Value, field string) (interface{}, error) {
+	mapValue := v.Interface().(map[string]interface{})
+	value, exists := mapValue[field]
+	if !exists {
+		// Try converting the field to lowercase
+		field = strings.ToLower(field)
+		value, exists = mapValue[field]
+		if !exists {
+			return nil, fmt.Errorf("field '%s' not found in map", field)
+		}
+	}
+	return value, nil
+}
+
+// getFieldValueFromStruct retrieves the value of a field from a struct.
+func getFieldValueFromStruct(v reflect.Value, field string) (interface{}, error) {
+	fieldValue := v.FieldByName(field)
+	if !fieldValue.IsValid() {
+		// Try converting the field to lowercase
+		field = strings.ToLower(field)
+		fieldValue = v.FieldByName(field)
+		if !fieldValue.IsValid() {
+			return nil, fmt.Errorf("field '%s' not found in struct", field)
+		}
+	}
+	return fieldValue.Interface(), nil
 }

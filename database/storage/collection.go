@@ -40,8 +40,7 @@ func (c *Collection) CreateIndex(field string, options *indexing.IndexOptions) e
 
 	for _, doc := range c.data {
 		if err := index.Insert(doc); err != nil {
-			fmt.Println("Error inserting document into index:", err)
-			return err
+			return fmt.Errorf("error inserting document into index: %v", err)
 		}
 	}
 
@@ -58,10 +57,8 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 
 	c.data[id] = doc
 
-	err := c.CreateIndexesFromModel(doc)
-	if err != nil {
-		fmt.Println("Error creating indexes from model:", err)
-		return err
+	if err := c.createIndexesFromModel(doc); err != nil {
+		return fmt.Errorf("error creating indexes from model: %v", err)
 	}
 
 	for _, index := range c.indexes {
@@ -86,17 +83,14 @@ func (c *Collection) Delete(id string) error {
 		return fmt.Errorf("document with ID %s not found", id)
 	}
 
-	// Eliminar el documento de la memoria
 	delete(c.data, id)
 
-	// Eliminar el documento de los índices
 	for _, index := range c.indexes {
 		if err := index.Delete(doc); err != nil {
 			return err
 		}
 	}
 
-	// Guardar la colección en el archivo
 	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
 		return err
 	}
@@ -110,10 +104,7 @@ func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 
 	var foundDocs []*document.Document
 
-	// Buscar en los índices
 	for _, index := range c.indexes {
-		fmt.Println("Checking index:", index.Field)
-
 		if index.CanUseIndex(q) {
 			docIDs, err := index.Find(q)
 			if err != nil {
@@ -127,24 +118,16 @@ func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 				}
 			}
 
-			// Si se encontraron documentos en el índice, no es necesario realizar una búsqueda completa
 			if len(foundDocs) > 0 {
-				fmt.Println("Found documents using index:", index.Field)
 				return foundDocs, nil
 			}
 		}
 	}
 
-	// Si no se encontraron documentos en los índices, realizar una búsqueda completa
-	fmt.Println("No suitable index found, performing full collection scan")
 	for _, doc := range c.data {
 		if q.Matches(doc) {
 			foundDocs = append(foundDocs, doc)
 		}
-	}
-
-	if len(foundDocs) == 0 {
-		fmt.Println("No documents found")
 	}
 
 	return foundDocs, nil
@@ -154,8 +137,6 @@ func (c *Collection) Get(id string) (*document.Document, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	fmt.Println("Getting document with ID", id)
-	fmt.Println("Collection data:", c.data)
 	doc, exists := c.data[id]
 	if !exists {
 		return nil, fmt.Errorf("document with ID %s not found", id)
@@ -173,10 +154,8 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 		return fmt.Errorf("document with ID %s not found", id)
 	}
 
-	// Actualizar el documento en la memoria
 	c.data[id] = doc
 
-	// Actualizar el documento en los índices
 	for _, index := range c.indexes {
 		if err := index.Delete(oldDoc); err != nil {
 			return err
@@ -186,7 +165,6 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 		}
 	}
 
-	// Guardar la colección en el archivo
 	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
 		return err
 	}
@@ -194,33 +172,27 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 	return nil
 }
 
-func (c *Collection) CreateIndexesFromModel(model interface{}) error {
-	// Get the value of the model
+func (c *Collection) createIndexesFromModel(model interface{}) error {
 	modelValue := reflect.ValueOf(model)
 
-	// Check if the model is a pointer
 	if modelValue.Kind() == reflect.Ptr {
 		if modelValue.IsNil() {
 			return fmt.Errorf("model is a nil pointer")
 		}
-		// Get the underlying value of the pointer
 		modelValue = modelValue.Elem()
 	}
 
-	// Check if the model is a struct
 	if modelValue.Kind() != reflect.Struct {
 		return fmt.Errorf("model must be a struct or a pointer to a struct")
 	}
 
-	// Iterate over the fields of the model
 	for i := 0; i < modelValue.NumField(); i++ {
 		field := modelValue.Type().Field(i)
 		if value := field.Tag.Get("index"); value == "true" {
 			options := &indexing.IndexOptions{
 				Unique: false,
 			}
-			err := c.CreateIndex(field.Name, options)
-			if err != nil {
+			if err := c.CreateIndex(field.Name, options); err != nil {
 				return err
 			}
 		}
@@ -229,7 +201,6 @@ func (c *Collection) CreateIndexesFromModel(model interface{}) error {
 	return nil
 }
 
-// BulkInsert inserts multiple documents into the collection in batches.
 func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error {
 	var wg sync.WaitGroup
 	numBatches := (len(docs) + batchSize - 1) / batchSize
@@ -258,7 +229,6 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 					return
 				}
 
-				// Add the document to memory
 				c.data[id] = doc
 			}
 		}(docs[start:end])
@@ -266,23 +236,19 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 
 	wg.Wait()
 
-	// Check for errors
 	select {
 	case err := <-errChan:
 		return err
 	default:
 	}
 
-	// Save the collection to the file once
 	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
 		return err
 	}
 
-	// Create indexes after bulk insertion
 	for _, doc := range docs {
-		if err := c.CreateIndexesFromModel(doc); err != nil {
-			fmt.Println("Error creating indexes from model:", err)
-			return err
+		if err := c.createIndexesFromModel(doc); err != nil {
+			return fmt.Errorf("error creating indexes from model: %v", err)
 		}
 		for _, index := range c.indexes {
 			if err := index.Insert(doc); err != nil {
@@ -294,23 +260,9 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 	return nil
 }
 
-func (c *Collection) GetIndexes() map[string]*indexing.Index {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	return c.indexes
-}
-
-func (c *Collection) GetDocuments() map[string]*document.Document {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	return c.data
-}
-
+// ApplyIndexesFromModel creates indexes for the collection based on the model.
 func (c *Collection) ApplyIndexesFromModel(model interface{}) error {
-	err := c.CreateIndexesFromModel(model)
-	if err != nil {
+	if err := c.createIndexesFromModel(model); err != nil {
 		return err
 	}
 

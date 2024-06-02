@@ -17,6 +17,7 @@ type MemoryStorage struct {
 	mutex       sync.RWMutex
 }
 
+// NewMemoryStorage creates a new MemoryStorage instance with the specified data directory.
 func NewMemoryStorage(dataDir string) (*MemoryStorage, error) {
 	err := os.MkdirAll(dataDir, os.ModePerm)
 	if err != nil {
@@ -31,12 +32,14 @@ func NewMemoryStorage(dataDir string) (*MemoryStorage, error) {
 	return ms, nil
 }
 
+// RegisterModel registers a model for a specific collection.
 func (ms *MemoryStorage) RegisterModel(collectionName string, model interface{}) {
 	ms.mutex.Lock()
 	defer ms.mutex.Unlock()
 	ms.models[collectionName] = model
 }
 
+// GetModel retrieves the model registered for a specific collection.
 func (ms *MemoryStorage) GetModel(collectionName string) interface{} {
 	ms.mutex.RLock()
 	defer ms.mutex.RUnlock()
@@ -48,6 +51,7 @@ func (ms *MemoryStorage) GetModel(collectionName string) interface{} {
 	return model
 }
 
+// LoadExistingCollections loads all existing collections from the data directory.
 func (ms *MemoryStorage) LoadExistingCollections() error {
 	files, err := os.ReadDir(ms.dataDir)
 	if err != nil {
@@ -60,7 +64,7 @@ func (ms *MemoryStorage) LoadExistingCollections() error {
 		}
 
 		collectionName := file.Name()
-		collectionName = collectionName[:len(collectionName)-5]
+		collectionName = collectionName[:len(collectionName)-5] // Remove .json extension
 
 		collection, err := ms.LoadCollection(collectionName)
 		if err != nil {
@@ -82,6 +86,7 @@ func (ms *MemoryStorage) LoadExistingCollections() error {
 	return nil
 }
 
+// CreateCollection creates a new collection with the specified name.
 func (ms *MemoryStorage) CreateCollection(name string) (*Collection, error) {
 	ms.mutex.Lock()
 	defer ms.mutex.Unlock()
@@ -91,12 +96,12 @@ func (ms *MemoryStorage) CreateCollection(name string) (*Collection, error) {
 	}
 
 	collection := NewCollection(name, ms)
-
 	ms.collections[name] = collection
 
 	return collection, nil
 }
 
+// GetCollection retrieves a collection by name.
 func (ms *MemoryStorage) GetCollection(name string) (*Collection, error) {
 	ms.mutex.RLock()
 	defer ms.mutex.RUnlock()
@@ -106,9 +111,10 @@ func (ms *MemoryStorage) GetCollection(name string) (*Collection, error) {
 		return collection, nil
 	}
 
-	return collection, nil
+	return nil, fmt.Errorf("collection '%s' does not exist", name)
 }
 
+// SaveCollection saves the specified collection data to a file.
 func (ms *MemoryStorage) SaveCollection(name string, data map[string]*document.Document) error {
 	ms.mutex.Lock()
 	defer ms.mutex.Unlock()
@@ -129,6 +135,7 @@ func (ms *MemoryStorage) SaveCollection(name string, data map[string]*document.D
 	return nil
 }
 
+// LoadCollection loads the specified collection data from a file.
 func (ms *MemoryStorage) LoadCollection(name string) (map[string]*document.Document, error) {
 	ms.mutex.Lock()
 	defer ms.mutex.Unlock()
@@ -154,6 +161,7 @@ func (ms *MemoryStorage) LoadCollection(name string) (map[string]*document.Docum
 	return collectionData, nil
 }
 
+// getCollectionFilePath constructs the file path for a collection.
 func (ms *MemoryStorage) getCollectionFilePath(name string) string {
 	return filepath.Join(ms.dataDir, name+".json")
 }
