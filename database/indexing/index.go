@@ -8,6 +8,7 @@ import (
 
 	"github.com/bypepe77/ZenithDB/database/document"
 	"github.com/bypepe77/ZenithDB/database/query"
+
 	"github.com/google/btree"
 )
 

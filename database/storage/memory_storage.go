@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/bypepe77/ZenithDB/database/document"
 )
+
+var ErrCollectionNotFound = errors.New("collection not found")
 
 type MemoryStorage struct {
 	dataDir     string
@@ -51,6 +54,24 @@ func (ms *MemoryStorage) GetModel(collectionName string) interface{} {
 	return model
 }
 
+func (ms *MemoryStorage) RegisterIndex(collectionName string, fields []string) {
+	ms.mutex.RLock()
+	defer ms.mutex.RUnlock()
+
+	collection, err := ms.GetCollection(collectionName)
+	if err != nil {
+		return
+	}
+
+	for _, field := range fields {
+		err = collection.CreateIndex(field, nil)
+		if err != nil {
+			fmt.Println("Error creating index:", err)
+		}
+	}
+
+}
+
 // LoadExistingCollections loads all existing collections from the data directory.
 func (ms *MemoryStorage) LoadExistingCollections() error {
 	files, err := os.ReadDir(ms.dataDir)
@@ -75,13 +96,6 @@ func (ms *MemoryStorage) LoadExistingCollections() error {
 		fmt.Println("Loaded collection", collectionName, "with", len(collection), "documents")
 
 		collectionInstance.data = collection
-
-		ms.collections[collectionName] = collectionInstance
-		model := ms.GetModel(collectionName)
-		err = collectionInstance.ApplyIndexesFromModel(model)
-		if err != nil {
-			return fmt.Errorf("failed to apply indexes from model: %v", err)
-		}
 	}
 	return nil
 }
@@ -111,7 +125,7 @@ func (ms *MemoryStorage) GetCollection(name string) (*Collection, error) {
 		return collection, nil
 	}
 
-	return nil, fmt.Errorf("collection '%s' does not exist", name)
+	return nil, ErrCollectionNotFound
 }
 
 // SaveCollection saves the specified collection data to a file.

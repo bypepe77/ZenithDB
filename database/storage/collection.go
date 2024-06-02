@@ -259,20 +259,3 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 
 	return nil
 }
-
-// ApplyIndexesFromModel creates indexes for the collection based on the model.
-func (c *Collection) ApplyIndexesFromModel(model interface{}) error {
-	if err := c.createIndexesFromModel(model); err != nil {
-		return err
-	}
-
-	for _, doc := range c.data {
-		for _, index := range c.indexes {
-			if err := index.Insert(doc); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
