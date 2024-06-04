@@ -2,19 +2,24 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 
 	"github.com/bypepe77/ZenithDB/database/document"
+	"github.com/bypepe77/ZenithDB/modelregistry"
 )
 
+var ErrCollectionNotFound = errors.New("collection not found")
+
 type MemoryStorage struct {
-	dataDir     string
-	collections map[string]*Collection
-	models      map[string]interface{}
-	mutex       sync.RWMutex
+	dataDir       string
+	collections   map[string]*Collection
+	modelRegistry *modelregistry.ModelRegistry
+	mutex         sync.RWMutex
 }
 
 // NewMemoryStorage creates a new MemoryStorage instance with the specified data directory.
@@ -25,30 +30,38 @@ func NewMemoryStorage(dataDir string) (*MemoryStorage, error) {
 	}
 
 	ms := &MemoryStorage{
-		dataDir:     dataDir,
-		collections: make(map[string]*Collection),
-		models:      make(map[string]interface{}),
+		dataDir:       dataDir,
+		collections:   make(map[string]*Collection),
+		modelRegistry: modelregistry.New(),
 	}
 	return ms, nil
 }
 
-// RegisterModel registers a model for a specific collection.
-func (ms *MemoryStorage) RegisterModel(collectionName string, model interface{}) {
-	ms.mutex.Lock()
-	defer ms.mutex.Unlock()
-	ms.models[collectionName] = model
-}
+func (ms *MemoryStorage) RegisterDefaultModels(collectionName string, model interface{}) error {
+	modelType := reflect.TypeOf(model)
+	if modelType.Kind() != reflect.Struct && modelType.Kind() != reflect.Ptr {
+		return fmt.Errorf("Model registered for collection %s is not a struct or a pointer to a struct", collectionName)
+	}
 
-// GetModel retrieves the model registered for a specific collection.
-func (ms *MemoryStorage) GetModel(collectionName string) interface{} {
+	// Registrar el modelo en el ModelRegistry
+	err := ms.modelRegistry.RegisterModel(collectionName, model)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+func (ms *MemoryStorage) RegisterIndex(collectionName string, fields []string) {
 	ms.mutex.RLock()
 	defer ms.mutex.RUnlock()
-	model, exists := ms.models[collectionName]
-	if !exists {
-		fmt.Printf("No model registered for collection %s\n", collectionName)
-		return nil
+
+	collection, err := ms.GetCollection(collectionName)
+	if err != nil {
+		fmt.Println("Error getting collection", err)
+		return
 	}
-	return model
+
+	collection.CreateIndexes(fields, collectionName)
 }
 
 // LoadExistingCollections loads all existing collections from the data directory.
@@ -66,23 +79,26 @@ func (ms *MemoryStorage) LoadExistingCollections() error {
 		collectionName := file.Name()
 		collectionName = collectionName[:len(collectionName)-5] // Remove .json extension
 
-		collection, err := ms.LoadCollection(collectionName)
+		err := ms.LoadAndCreateCollection(collectionName)
 		if err != nil {
-			return fmt.Errorf("failed to load collection '%s': %v", collectionName, err)
-		}
-
-		collectionInstance := NewCollection(collectionName, ms)
-		fmt.Println("Loaded collection", collectionName, "with", len(collection), "documents")
-
-		collectionInstance.data = collection
-
-		ms.collections[collectionName] = collectionInstance
-		model := ms.GetModel(collectionName)
-		err = collectionInstance.ApplyIndexesFromModel(model)
-		if err != nil {
-			return fmt.Errorf("failed to apply indexes from model: %v", err)
+			return err
 		}
 	}
+	return nil
+}
+
+func (ms *MemoryStorage) LoadAndCreateCollection(collectionName string) error {
+	collection, err := ms.LoadCollection(collectionName)
+	if err != nil {
+		return fmt.Errorf("failed to load collection '%s': %v", collectionName, err)
+	}
+
+	collectionInstance := NewCollection(collectionName, ms)
+	collectionInstance.data = collection
+
+	ms.collections[collectionName] = collectionInstance
+	fmt.Println("Loaded collection", collectionName, "with", len(collection), "documents")
+
 	return nil
 }
 
@@ -111,7 +127,7 @@ func (ms *MemoryStorage) GetCollection(name string) (*Collection, error) {
 		return collection, nil
 	}
 
-	return nil, fmt.Errorf("collection '%s' does not exist", name)
+	return nil, ErrCollectionNotFound
 }
 
 // SaveCollection saves the specified collection data to a file.

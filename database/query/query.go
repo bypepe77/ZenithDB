@@ -24,23 +24,48 @@ type Condition struct {
 	Field    string
 	Operator Operator
 	Value    interface{}
+	Relation string // Nuevo campo para relaciones
+}
+
+type Populate struct {
+	Field       string
+	Collection  string
+	OutputField string
+	Condition   *Query
 }
 
 type Query struct {
 	Conditions []Condition
+	Populates  []Populate
 }
 
 func NewQuery() *Query {
 	return &Query{
 		Conditions: make([]Condition, 0),
+		Populates:  make([]Populate, 0),
 	}
 }
 
-func (q *Query) Where(field string, operator Operator, value interface{}) *Query {
+func (q *Query) Where(field string, operator Operator, value interface{}, relation ...string) *Query {
+	rel := ""
+	if len(relation) > 0 {
+		rel = relation[0]
+	}
 	q.Conditions = append(q.Conditions, Condition{
 		Field:    field,
 		Operator: operator,
 		Value:    value,
+		Relation: rel,
+	})
+	return q
+}
+
+func (q *Query) Populate(field, collection, outputField string, condition *Query) *Query {
+	q.Populates = append(q.Populates, Populate{
+		Field:       field,
+		Collection:  collection,
+		OutputField: outputField,
+		Condition:   condition,
 	})
 	return q
 }
@@ -54,8 +79,59 @@ func (q *Query) Matches(doc *document.Document) bool {
 	return true
 }
 
+func (q *Query) Execute(docs []*document.Document) []*document.Document {
+	var results []*document.Document
+	for _, doc := range docs {
+		if q.Matches(doc) {
+			results = append(results, doc)
+		}
+	}
+
+	for _, populate := range q.Populates {
+		for _, doc := range results {
+			relatedDocs := getFieldValue(doc.Data, populate.Field).([]*document.Document)
+			populatedDocs := populate.Condition.Execute(relatedDocs)
+			setFieldValue(doc.Data, populate.Field, populatedDocs)
+		}
+	}
+
+	return results
+}
+
+func (q *Query) ShouldPopulate() bool {
+	return len(q.Populates) > 0
+}
+
+func (q *Query) GetPopulateFields() []string {
+	fields := make([]string, len(q.Populates))
+	for i, populate := range q.Populates {
+		fields[i] = populate.Field
+	}
+	return fields
+}
+
+func (q *Query) GetRelatedCollection() string {
+	if len(q.Populates) > 0 {
+		return q.Populates[0].Collection
+	}
+	return ""
+}
+
+func (q *Query) GetPopulatedOutputField() string {
+	if len(q.Populates) > 0 {
+		return q.Populates[0].OutputField
+	}
+	return ""
+}
+
 func (c *Condition) Matches(doc *document.Document) bool {
-	value := getFieldValue(doc.Data, c.Field)
+	var value interface{}
+	if c.Relation == "" {
+		value = getFieldValue(doc.Data, c.Field)
+	} else {
+		relatedDoc := getFieldValue(doc.Data, c.Relation)
+		value = getFieldValue(relatedDoc, c.Field)
+	}
 
 	switch c.Operator {
 	case OpEqual:
@@ -86,6 +162,17 @@ func getFieldValue(data interface{}, path string) interface{} {
 		return result.Value()
 	}
 	return nil
+}
+
+func setFieldValue(data interface{}, path string, value interface{}) {
+	jsonData := toJSON(data)
+	result := gjson.GetBytes(jsonData, path)
+
+	if result.Exists() {
+		// Actualiza el valor en el mapa original
+		dataMap := data.(map[string]interface{})
+		dataMap[path] = value
+	}
 }
 
 func toJSON(data interface{}) []byte {

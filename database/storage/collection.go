@@ -57,7 +57,7 @@ func (c *Collection) Insert(id string, doc *document.Document) error {
 
 	c.data[id] = doc
 
-	if err := c.createIndexesFromModel(doc); err != nil {
+	if err := c.CreateIndexesFromModel(doc); err != nil {
 		return fmt.Errorf("error creating indexes from model: %v", err)
 	}
 
@@ -119,6 +119,7 @@ func (c *Collection) Find(q *query.Query) ([]*document.Document, error) {
 			}
 
 			if len(foundDocs) > 0 {
+				fmt.Println("Found docs using index", foundDocs)
 				return foundDocs, nil
 			}
 		}
@@ -171,28 +172,24 @@ func (c *Collection) Update(id string, doc *document.Document) error {
 
 	return nil
 }
-
-func (c *Collection) createIndexesFromModel(model interface{}) error {
-	modelValue := reflect.ValueOf(model)
-
-	if modelValue.Kind() == reflect.Ptr {
-		if modelValue.IsNil() {
-			return fmt.Errorf("model is a nil pointer")
-		}
-		modelValue = modelValue.Elem()
+func (c *Collection) CreateIndexesFromModel(model interface{}) error {
+	modelType := reflect.TypeOf(model)
+	if modelType.Kind() == reflect.Ptr {
+		modelType = modelType.Elem()
 	}
 
-	if modelValue.Kind() != reflect.Struct {
+	if modelType.Kind() != reflect.Struct {
 		return fmt.Errorf("model must be a struct or a pointer to a struct")
 	}
 
-	for i := 0; i < modelValue.NumField(); i++ {
-		field := modelValue.Type().Field(i)
-		if value := field.Tag.Get("index"); value == "true" {
-			options := &indexing.IndexOptions{
+	for i := 0; i < modelType.NumField(); i++ {
+		field := modelType.Field(i)
+		if indexTag := field.Tag.Get("index"); indexTag == "true" {
+			indexName := field.Name
+			indexOptions := &indexing.IndexOptions{
 				Unique: false,
 			}
-			if err := c.CreateIndex(field.Name, options); err != nil {
+			if err := c.CreateIndex(indexName, indexOptions); err != nil {
 				return err
 			}
 		}
@@ -202,44 +199,10 @@ func (c *Collection) createIndexesFromModel(model interface{}) error {
 }
 
 func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error {
-	var wg sync.WaitGroup
-	numBatches := (len(docs) + batchSize - 1) / batchSize
-
-	errChan := make(chan error, numBatches)
-	defer close(errChan)
-
-	for i := 0; i < numBatches; i++ {
-		start := i * batchSize
-		end := start + batchSize
-		if end > len(docs) {
-			end = len(docs)
+	for _, doc := range docs {
+		if err := c.insertDocument(doc); err != nil {
+			return err
 		}
-
-		wg.Add(1)
-		go func(batch []*document.Document) {
-			defer wg.Done()
-			c.mutex.Lock()
-			defer c.mutex.Unlock()
-
-			for _, doc := range batch {
-				id := doc.ID
-
-				if _, exists := c.data[id]; exists {
-					errChan <- nil
-					return
-				}
-
-				c.data[id] = doc
-			}
-		}(docs[start:end])
-	}
-
-	wg.Wait()
-
-	select {
-	case err := <-errChan:
-		return err
-	default:
 	}
 
 	if err := c.db.SaveCollection(c.Name, c.data); err != nil {
@@ -247,7 +210,7 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 	}
 
 	for _, doc := range docs {
-		if err := c.createIndexesFromModel(doc); err != nil {
+		if err := c.CreateIndexesFromModel(doc); err != nil {
 			return fmt.Errorf("error creating indexes from model: %v", err)
 		}
 		for _, index := range c.indexes {
@@ -260,19 +223,46 @@ func (c *Collection) BulkInsert(docs []*document.Document, batchSize int) error 
 	return nil
 }
 
-// ApplyIndexesFromModel creates indexes for the collection based on the model.
-func (c *Collection) ApplyIndexesFromModel(model interface{}) error {
-	if err := c.createIndexesFromModel(model); err != nil {
-		return err
-	}
+func (c *Collection) CreateIndexes(fields []string, collection string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	for _, doc := range c.data {
-		for _, index := range c.indexes {
-			if err := index.Insert(doc); err != nil {
-				return err
+	fmt.Println("fields", fields)
+	for _, field := range fields {
+		if _, exists := c.indexes[field]; !exists {
+			options := &indexing.IndexOptions{
+				Unique: false,
+			}
+			index := indexing.NewIndex(field, options)
+			if index == nil {
+				fmt.Printf("Error creating index for field %s\n", field)
+				continue
+			}
+			c.indexes[field] = index
+			for _, doc := range c.data {
+				if index == nil {
+					fmt.Printf("Index is nil for field %s\n", field)
+					continue
+				}
+				if err := index.Insert(doc); err != nil {
+					fmt.Printf("Error inserting document into index for field %s: %v\n", field, err)
+				}
 			}
 		}
 	}
+}
+
+func (c *Collection) insertDocument(doc *document.Document) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	id := doc.ID
+
+	if _, exists := c.data[id]; exists {
+		return nil
+	}
+
+	c.data[id] = doc
 
 	return nil
 }
