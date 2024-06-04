@@ -60,12 +60,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Register models
-	product := &Product{}
-	category := &Category{}
-	fmt.Println("Registering models for collections 'products' and 'categories'")
-	memStorage.RegisterModel("products", product)
-	memStorage.RegisterModel("categories", category)
+	productModel := &Product{}
+	categoryModel := &Category{}
+	err = memStorage.RegisterDefaultModels("products", productModel)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = memStorage.RegisterDefaultModels("categories", categoryModel)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	err = memStorage.LoadExistingCollections()
 	if err != nil {
@@ -76,6 +81,7 @@ func main() {
 	db := zenithdb.New(memStorage)
 
 	// Create collections
+
 	productsCollection, err = db.CreateCollection("products")
 	if err != nil {
 		fmt.Println("Error creating collection:", err)
@@ -130,8 +136,8 @@ func main() {
 		fmt.Printf("Insertion time: %d ms\n", elapsedInsertion.Milliseconds())
 	*/
 
-	memStorage.RegisterIndex("products", []string{"Name", "CategoryID", "ID"})
-	memStorage.RegisterIndex("categories", []string{"Name", "ID"})
+	memStorage.RegisterIndex("products", []string{"name", "category_id", "price"})
+	memStorage.RegisterIndex("categories", []string{"name", "id"})
 
 	// Start HTTP server
 	http.HandleFunc("/product", getProductByName)
@@ -155,7 +161,6 @@ func getProductByName(w http.ResponseWriter, r *http.Request) {
 		Where("name", query.OpEqual, name).
 		Populate("category_id", "categories", "category", query.NewQuery())
 
-	// Execute query
 	allProducts, err := productsCollection.Find(productQuery)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error querying products: %v", err), http.StatusInternalServerError)
