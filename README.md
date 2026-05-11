@@ -1,164 +1,172 @@
 # ZenithDB
 
-ZenithDB is an experimental application database engine written in Go.
+ZenithDB is an experimental database engine written in Go for applications that
+want database-style modeling without putting a general-purpose SQL engine in the
+hot path.
 
-The goal is a fast in-process engine with a Prisma-like developer experience,
-schema-defined models, native relations, in-memory indexes, durable append-only
-persistence, and schema compilation for low-overhead query paths.
+The project is built around one central bet:
 
-## Repository Layout
+> If an application schema is known ahead of time, the database can compile that
+> knowledge into its client, indexes, relation expansion, persistence contract,
+> and remote protocol.
 
-```txt
-cmd/zenith/                Developer CLI
-examples/hexagonal/        Hexagonal architecture integration example
-pkg/zenithdb/              Core public Go engine
-pkg/zenithdb/compiler/     Prisma-like schema parser and Go schema generator
-benchmarks/                Throughput and allocation benchmarks
-```
+That makes ZenithDB closer to a schema-compiled application database than to a
+traditional relational server. It borrows the developer experience of Prisma,
+the low-latency shape of an embedded/in-memory engine, and the deployment model
+of a remote database server.
 
-## Current MVP
+## What ZenithDB Is Optimizing For
 
-- Schema-first models with fields, primary keys, secondary indexes, unique indexes, and relation metadata.
-- In-memory query engine with `Create`, `Update`, `Delete`, `FindUnique`, and `FindMany`.
-- Indexed lookups for primary keys, unique indexes, and secondary indexes.
-- Prisma-like relation expansion through `Include`.
-- Data directory persistence with manifest, WAL, snapshots, and automatic recovery.
-- Append-only WAL for durable mutations with configurable sync policy.
-- Checkpoint snapshots for faster recovery.
-- Prisma-like schema parser foundation.
-- Go schema generator with Prisma-like `FindUnique` and `FindMany` argument types.
-- Binary TCP wire protocol for remote data operations.
-- Versioned wire handshake with schema hash compatibility checks and bounded frames.
-- Pooled remote client connections for concurrent callers.
-- HTTP control plane for health, schema metadata, and checkpoint operations.
-- Developer CLI with `init`, `validate`, `generate`, `bench`, `repl`, `serve`, and remote schema commands.
-- Dedicated benchmark package with raw map baseline comparison.
-- Focused tests for indexed reads, relations, WAL replay, and snapshots.
+ZenithDB is designed for workloads where data access is predictable:
 
-## CLI
+- Model operations instead of arbitrary SQL strings.
+- Primary-key, unique-index, and secondary-index reads as the common path.
+- Generated Go clients that know the schema at compile time.
+- Relation expansion through explicit metadata and indexes.
+- In-memory tables and indexes for low-overhead reads.
+- Append-only durability with WAL replay and checkpoints.
+- Embedded mode when the application and database should share a process.
+- Remote mode through a custom binary TCP protocol, not HTTP/JSON.
 
-Create a starter schema:
+The goal is not to replace every database. The goal is to make a specific class
+of application workloads simpler and faster by removing generic layers that are
+not needed when the schema and query shapes are known.
 
-```bash
-go run ./cmd/zenith init
-```
+## Why Not Just Postgres?
 
-Validate the schema:
+Postgres is the right default for many systems. It is mature, operationally
+proven, SQL-native, transactional, extensible, and excellent for complex
+relational workloads.
 
-```bash
-go run ./cmd/zenith validate
-```
+ZenithDB explores a different tradeoff.
 
-Generate a typed Go client from the schema:
+Postgres must accept arbitrary SQL, plan queries dynamically, execute across a
+disk-oriented storage engine, handle many isolation scenarios, and support broad
+workload shapes. That generality is powerful, but it adds layers between the
+application model and the actual data access path.
 
-```bash
-go run ./cmd/zenith generate
-```
+ZenithDB removes some of that generality:
 
-The default output is `zenith/generated.go`. It contains typed structs and
-model clients such as:
+- No SQL planner in the hot path.
+- No runtime ORM mapping from rows into model objects.
+- No requirement to cross a network boundary in embedded mode.
+- No text-based data protocol for remote operations.
+- No ad hoc relation discovery at query time.
 
-```go
-client, err := zenith.Open(ctx, zenithdb.Options{
-	DataDir: ".zenithdb",
-})
-user, ok, err := client.User.FindUniqueByID(ctx, "u1")
-user, ok, err = client.User.FindUnique(ctx, zenith.UserFindUniqueArgs{
-	Where: zenith.UserWhereUniqueInput{ID: "u1"},
-	Include: &zenith.UserInclude{Posts: true},
-})
-posts, err := client.Post.FindManyByAuthorID(ctx, "u1", 50)
-posts, err = client.Post.FindMany(ctx, zenith.PostFindManyArgs{
-	Where: zenith.PostWhereInput{AuthorID: ptr("u1")},
-	Take:  50,
-})
-```
+In exchange, ZenithDB is narrower. It is strongest when queries are model-level,
+index-first, and known ahead of time. Postgres remains the better choice for
+complex joins, analytics, mature ACID semantics, replication, operational
+tooling, and heterogeneous workloads.
 
-Run a quick in-process read benchmark:
+## Why Not Just Redis?
 
-```bash
-go run ./cmd/zenith bench -records 100000 -queries 1000000
-```
+Redis is extremely fast because it is an in-memory data structure server. It is
+excellent for caching, counters, queues, pub/sub, ephemeral state, and shared
+low-latency infrastructure.
 
-Open a tiny REPL:
+ZenithDB is trying to sit higher in the stack:
 
-```bash
-go run ./cmd/zenith repl -data .zenithdb
-```
+- It has schema-defined models.
+- It builds primary, unique, and secondary indexes from that schema.
+- It generates typed model clients.
+- It understands relation metadata.
+- It persists database mutations through a WAL and checkpoints.
+- It can run embedded or as a remote database server.
 
-Example REPL commands:
+Redis gives you powerful primitives. ZenithDB aims to give you an application
+database model with a Prisma-like API and a more explicit persistence story.
 
-```txt
-create User id=u1 email=ada@example.com name=Ada
-find User id=u1
-list User
-exit
-```
+## Why Not Just Prisma?
 
-Run ZenithDB as a remote server:
+Prisma is a client and schema layer on top of existing databases. ZenithDB uses a
+Prisma-like schema as the database contract itself.
 
-```bash
-go run ./cmd/zenith serve -schema zenith.schema -addr 0.0.0.0:8787 -wire-addr 0.0.0.0:8788 -data .zenithdb -token dev-token
-```
+The schema drives:
 
-The HTTP address is the control plane. The `zenith://` URL should point to the
-binary wire address, which is used for data operations and schema metadata.
+- Engine validation.
+- Primary, unique, and secondary index construction.
+- Generated Go model structs.
+- Typed create, update, where, include, and query arguments.
+- Relation expansion metadata.
+- Remote client compatibility through a schema hash handshake.
 
-From another machine, pull the server schema and generate a typed client from it:
+In other words, the schema is not only ORM metadata. It is part of the runtime
+execution plan.
 
-```bash
-go run ./cmd/zenith schema pull -url "zenith://db.example.com:8788?token=dev-token" -out zenith.schema
-go run ./cmd/zenith generate -url "zenith://db.example.com:8788?token=dev-token" -out zenith/generated.go
-```
+## Architecture
 
-Validate that a local schema matches the remote server:
+ZenithDB is split into a few focused layers:
 
-```bash
-go run ./cmd/zenith schema push -url "zenith://db.example.com:8788?token=dev-token" -schema zenith.schema
-```
+- **Schema compiler**: parses the Prisma-like schema and generates typed Go
+  clients.
+- **In-memory engine**: stores model records and maintains primary, unique, and
+  secondary indexes.
+- **Query executor**: handles `FindUnique`, `FindMany`, filters, ordering,
+  pagination, counts, relation includes, upserts, bulk mutations, and batches.
+- **Durability layer**: appends mutations to the WAL and writes checkpoint
+  snapshots for recovery.
+- **Binary wire protocol**: serves remote data operations over TCP with protocol
+  versioning, auth token support, bounded frames, schema hash checks, and pooled
+  clients.
+- **HTTP control plane**: exposes non-hot-path operations such as health checks,
+  schema metadata, and checkpoints.
 
-## Example
+The data plane and the control plane are intentionally separate. Data operations
+use the binary protocol; HTTP is not used for the performance-critical path.
 
-```go
-import zenithdb "github.com/bypepe77/ZenithDB/pkg/zenithdb"
+## Execution Model
 
-schema := zenithdb.Schema{
-	Models: []zenithdb.Model{
-		{
-			Name: "User",
-			Fields: []zenithdb.Field{
-				{Name: "id", Kind: zenithdb.FieldString, Required: true},
-				{Name: "email", Kind: zenithdb.FieldString, Required: true},
-				{Name: "name", Kind: zenithdb.FieldString, Required: true},
-			},
-			PrimaryKey: []string{"id"},
-			Indexes: []zenithdb.Index{
-				{Name: "user_email_unique", Fields: []string{"email"}, Unique: true},
-			},
-		},
-	},
+Records live in memory inside model-specific tables. Each table owns:
+
+- A primary-key map.
+- Unique index maps.
+- Secondary index maps.
+- Validation against the schema.
+
+Common generated-client reads can become direct indexed lookups. More advanced
+queries still execute against the engine, but they operate on known model
+metadata instead of parsing SQL.
+
+Mutations are designed around atomic publication. Batch operations, `Upsert`,
+`CreateMany`, `UpdateMany`, and `DeleteMany` are applied to a cloned next state
+first. If validation or uniqueness checks fail, the live state is not published.
+
+## Relation Model
+
+ZenithDB stores scalar foreign keys and treats relation fields as metadata.
+
+```prisma
+model User {
+  id    String @id
+  email String @unique
+  posts Post[]
 }
 
-db, err := zenithdb.Open(ctx, schema, zenithdb.Options{
-	DataDir: ".zenithdb",
-})
-if err != nil {
-	panic(err)
+model Post {
+  id       String @id
+  authorId String
+  author   User @relation(fields: [authorId], references: [id])
+
+  @@index([authorId])
 }
-defer db.Close()
-
-_, err = db.Create(ctx, "User", zenithdb.Record{
-	"id":    "u1",
-	"email": "ada@example.com",
-	"name":  "Ada",
-})
-
-err = db.Checkpoint(ctx)
 ```
 
-## Persistence
+The stored `Post` record contains `authorId`. It does not contain an embedded
+`User`. The `author` and `posts` fields tell ZenithDB how to expand related
+records when a query asks for `Include`.
 
-When `DataDir` is set, ZenithDB persists data under a product-style directory:
+This design keeps relation reads explicit. A many-to-one include uses a primary
+or unique lookup on the target model. A one-to-many include uses a secondary
+index on the target foreign-key field.
+
+Current relation support is focused on single-field relation pairs. Nested
+writes, cascading actions, strict referential integrity, many-to-many helpers,
+and relation filters are still roadmap items.
+
+## Persistence Model
+
+ZenithDB is not designed around rewriting one large JSON file on every mutation.
+The durable path is append-first:
 
 ```txt
 .zenithdb/
@@ -171,48 +179,92 @@ When `DataDir` is set, ZenithDB persists data under a product-style directory:
     db.lock
 ```
 
-Open recovery loads the latest checkpoint snapshot and replays WAL entries after
-that snapshot sequence. Writes append to the WAL before mutating memory.
+Writes are appended to the WAL before they are published in memory. Checkpoints
+write snapshots so recovery can load a recent state and replay only newer WAL
+entries.
 
-## Prisma-like Schema Compiler
+JSON remains useful for readable snapshots, portability, import/export, and
+debugging. The performance direction is binary WAL by default, checksums,
+segment rotation, binary snapshots, and compaction.
 
-```go
-import "github.com/bypepe77/ZenithDB/pkg/zenithdb/compiler"
+## Current Capabilities
 
-schema, err := compiler.ParseSchema(`
-model User {
-  id    String @id
-  email String @unique
-  name  String
-  posts Post[]
-}
+- Prisma-like schema parser.
+- Typed Go client generation.
+- Embedded and remote connection URLs.
+- Primary-key, unique-index, and secondary-index lookups.
+- Filters with equality, `in`, string `contains`, and range operators.
+- Ordering, skip/take, cursor pagination, and count.
+- Relation expansion with `Include`.
+- `Create`, `CreateMany`, `Update`, `UpdateMany`, `Delete`, `DeleteMany`.
+- Atomic `Batch` mutations.
+- Atomic `Upsert`.
+- WAL replay, snapshots, checkpoints, and data-directory recovery.
+- Binary TCP data protocol with pooled remote clients.
+- HTTP control plane for operational endpoints.
+- Benchmarks with raw Go map baselines.
 
-model Post {
-  id       String @id
-  authorId String
-  title    String
-  author   User @relation(fields: [authorId], references: [id])
+## Current Limits
 
-  @@index([authorId])
-}
-`)
+ZenithDB is still experimental. Important production-grade areas remain open:
+
+- Full transaction isolation.
+- Referential integrity enforcement.
+- Cascading relation actions.
+- Replication and clustering.
+- Online migrations.
+- Backup and restore tooling.
+- Observability and operational metrics.
+- Complex query planning across multiple indexes or relation filters.
+- WAL checksums, segment rotation, and corruption recovery hardening.
+
+The project should be judged as an engine and architecture experiment, not as a
+drop-in replacement for mature production databases.
+
+## When ZenithDB Is Interesting
+
+ZenithDB is worth exploring when:
+
+- The application owns a known schema.
+- Hot queries are predictable and index-first.
+- The team wants Prisma-like ergonomics with generated Go types.
+- Embedded mode can remove a network hop.
+- Remote mode is needed, but HTTP/JSON is not acceptable for data calls.
+- Schema compatibility between client and server should be explicit.
+
+Postgres is still the safer default for broad SQL, complex relational behavior,
+analytics, mature transactions, and operational depth. Redis is still the better
+fit for cache-first and ephemeral data-structure workloads.
+
+## Documentation
+
+Detailed guides live in [`docs/`](docs/README.md):
+
+- [Schema overview](docs/prisma-schema/overview.md)
+- [Data model](docs/prisma-schema/data-model.md)
+- [Relations](docs/prisma-schema/relations.md)
+- [Queries](docs/prisma-client/queries.md)
+- [Mutations](docs/prisma-client/mutations.md)
+
+## Repository Layout
+
+```txt
+cmd/zenith/                Developer CLI
+docs/                      Product documentation
+examples/hexagonal/        Hexagonal architecture integration example
+pkg/zenithdb/              Core public Go engine
+pkg/zenithdb/compiler/     Schema parser and Go client generator
+pkg/zenithdb/wire/         Binary remote protocol
+pkg/zenithdb/remote/       Remote client pool
+benchmarks/                Throughput and allocation benchmarks
+zenith/                    Generated example client
 ```
 
-## Benchmarks
+## Development Commands
 
 ```bash
+go run ./cmd/zenith validate
+go run ./cmd/zenith generate
+go test ./...
 go test ./benchmarks -bench=. -benchmem
 ```
-
-The benchmark suite includes a raw Go map baseline so the engine always has a
-clear target for the generated hot path.
-
-## Design Direction
-
-The long-term direction is:
-
-- Keep the hot path allocation-conscious and index-first.
-- Compile schema/query shapes into specialized execution plans.
-- Add sharded indexes and lock-light reads for high QPS.
-- Use WAL, binary snapshots, and segment compaction instead of rewriting a large JSON file.
-- Keep JSON for import/export, debugging, and small portable snapshots.

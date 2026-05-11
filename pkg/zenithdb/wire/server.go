@@ -137,6 +137,20 @@ func (s *Server) handleRequest(ctx context.Context, op byte, payload []byte) ([]
 		}
 		writeString(&response, result.Model)
 		writeString(&response, result.Key)
+	case opCreateMany:
+		model, err := readString(reader)
+		if err != nil {
+			return nil, err
+		}
+		records, err := readRecordSlice(reader)
+		if err != nil {
+			return nil, err
+		}
+		results, err := s.db.CreateMany(ctx, model, records)
+		if err != nil {
+			return nil, err
+		}
+		writeMutationResults(&response, results)
 	case opUpdate:
 		model, where, record, err := readMutateUpdate(reader)
 		if err != nil {
@@ -147,6 +161,24 @@ func (s *Server) handleRequest(ctx context.Context, op byte, payload []byte) ([]
 			return nil, err
 		}
 		writeRecord(&response, updated)
+	case opUpdateMany:
+		model, err := readString(reader)
+		if err != nil {
+			return nil, err
+		}
+		query, err := readQuery(reader)
+		if err != nil {
+			return nil, err
+		}
+		patch, err := readRecord(reader)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.db.UpdateMany(ctx, model, query, patch)
+		if err != nil {
+			return nil, err
+		}
+		writeManyResult(&response, result)
 	case opDelete:
 		model, where, err := readModelWhere(reader)
 		if err != nil {
@@ -157,6 +189,41 @@ func (s *Server) handleRequest(ctx context.Context, op byte, payload []byte) ([]
 			return nil, err
 		}
 		writeRecord(&response, deleted)
+	case opDeleteMany:
+		model, err := readString(reader)
+		if err != nil {
+			return nil, err
+		}
+		query, err := readQuery(reader)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.db.DeleteMany(ctx, model, query)
+		if err != nil {
+			return nil, err
+		}
+		writeManyResult(&response, result)
+	case opUpsert:
+		model, where, createRecord, updatePatch, err := readUpsert(reader)
+		if err != nil {
+			return nil, err
+		}
+		record, created, err := s.db.Upsert(ctx, model, where, createRecord, updatePatch)
+		if err != nil {
+			return nil, err
+		}
+		writeBool(&response, created)
+		writeRecord(&response, record)
+	case opBatch:
+		operations, err := readBatchOperations(reader)
+		if err != nil {
+			return nil, err
+		}
+		results, err := s.db.Batch(ctx, operations)
+		if err != nil {
+			return nil, err
+		}
+		writeBatchResults(&response, results)
 	case opFindUnique:
 		model, where, include, err := readFindUnique(reader)
 		if err != nil {
@@ -184,6 +251,20 @@ func (s *Server) handleRequest(ctx context.Context, op byte, payload []byte) ([]
 			return nil, err
 		}
 		writeRecordSlice(&response, records)
+	case opCount:
+		model, err := readString(reader)
+		if err != nil {
+			return nil, err
+		}
+		query, err := readQuery(reader)
+		if err != nil {
+			return nil, err
+		}
+		count, err := s.db.Count(ctx, model, query)
+		if err != nil {
+			return nil, err
+		}
+		writeInt64(&response, int64(count))
 	case opCheckpoint:
 		if err := s.db.Checkpoint(ctx); err != nil {
 			return nil, err
@@ -224,6 +305,23 @@ func readMutateUpdate(reader *bytes.Reader) (string, map[string]any, zenithdb.Re
 	}
 	record, err := readRecord(reader)
 	return model, where, record, err
+}
+
+func readUpsert(reader *bytes.Reader) (string, map[string]any, zenithdb.Record, zenithdb.Record, error) {
+	model, err := readString(reader)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	where, err := readStringMap(reader)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	createRecord, err := readRecord(reader)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	updatePatch, err := readRecord(reader)
+	return model, where, createRecord, updatePatch, err
 }
 
 func readModelWhere(reader *bytes.Reader) (string, map[string]any, error) {

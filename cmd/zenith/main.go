@@ -28,6 +28,7 @@ type replEngine interface {
 	Create(context.Context, string, zenithdb.Record) (zenithdb.MutationResult, error)
 	FindUnique(context.Context, string, map[string]any, map[string]zenithdb.Include) (zenithdb.Record, bool, error)
 	FindMany(context.Context, string, zenithdb.Query) ([]zenithdb.Record, error)
+	Count(context.Context, string, zenithdb.Query) (int, error)
 	Close() error
 }
 

@@ -20,6 +20,8 @@ const (
 	opCreate = "create"
 	opUpdate = "update"
 	opDelete = "delete"
+	opUpsert = "upsert"
+	opBatch  = "batch"
 )
 
 // WALFormat controls how operations are encoded on disk.
@@ -36,6 +38,8 @@ type operation struct {
 	Model    string         `json:"model"`
 	Where    map[string]any `json:"where,omitempty"`
 	Record   Record         `json:"record,omitempty"`
+	Patch    Record         `json:"patch,omitempty"`
+	Operations []operation  `json:"operations,omitempty"`
 }
 
 // WAL is an append-only operation log.

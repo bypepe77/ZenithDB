@@ -18,10 +18,16 @@ type Client struct {
 type wireClient interface {
 	Close() error
 	Create(context.Context, string, zenithdb.Record) (zenithdb.MutationResult, error)
+	CreateMany(context.Context, string, []zenithdb.Record) ([]zenithdb.MutationResult, error)
 	Update(context.Context, string, map[string]any, zenithdb.Record) (zenithdb.Record, error)
+	UpdateMany(context.Context, string, zenithdb.Query, zenithdb.Record) (zenithdb.ManyResult, error)
 	Delete(context.Context, string, map[string]any) (zenithdb.Record, error)
+	DeleteMany(context.Context, string, zenithdb.Query) (zenithdb.ManyResult, error)
+	Upsert(context.Context, string, map[string]any, zenithdb.Record, zenithdb.Record) (zenithdb.Record, bool, error)
+	Batch(context.Context, []zenithdb.BatchOperation) ([]zenithdb.BatchResult, error)
 	FindUnique(context.Context, string, map[string]any, map[string]zenithdb.Include) (zenithdb.Record, bool, error)
 	FindMany(context.Context, string, zenithdb.Query) ([]zenithdb.Record, error)
+	Count(context.Context, string, zenithdb.Query) (int, error)
 	Checkpoint(context.Context) error
 	PullSchema(context.Context) (string, error)
 	ValidateSchema(context.Context, string) error
@@ -102,12 +108,32 @@ func (c *Client) Create(ctx context.Context, model string, record zenithdb.Recor
 	return c.pick().Create(ctx, model, record)
 }
 
+func (c *Client) CreateMany(ctx context.Context, model string, records []zenithdb.Record) ([]zenithdb.MutationResult, error) {
+	return c.pick().CreateMany(ctx, model, records)
+}
+
 func (c *Client) Update(ctx context.Context, model string, where map[string]any, patch zenithdb.Record) (zenithdb.Record, error) {
 	return c.pick().Update(ctx, model, where, patch)
 }
 
+func (c *Client) UpdateMany(ctx context.Context, model string, query zenithdb.Query, patch zenithdb.Record) (zenithdb.ManyResult, error) {
+	return c.pick().UpdateMany(ctx, model, query, patch)
+}
+
 func (c *Client) Delete(ctx context.Context, model string, where map[string]any) (zenithdb.Record, error) {
 	return c.pick().Delete(ctx, model, where)
+}
+
+func (c *Client) DeleteMany(ctx context.Context, model string, query zenithdb.Query) (zenithdb.ManyResult, error) {
+	return c.pick().DeleteMany(ctx, model, query)
+}
+
+func (c *Client) Upsert(ctx context.Context, model string, where map[string]any, createRecord zenithdb.Record, updatePatch zenithdb.Record) (zenithdb.Record, bool, error) {
+	return c.pick().Upsert(ctx, model, where, createRecord, updatePatch)
+}
+
+func (c *Client) Batch(ctx context.Context, operations []zenithdb.BatchOperation) ([]zenithdb.BatchResult, error) {
+	return c.pick().Batch(ctx, operations)
 }
 
 func (c *Client) FindUnique(ctx context.Context, model string, where map[string]any, include map[string]zenithdb.Include) (zenithdb.Record, bool, error) {
@@ -116,4 +142,8 @@ func (c *Client) FindUnique(ctx context.Context, model string, where map[string]
 
 func (c *Client) FindMany(ctx context.Context, model string, query zenithdb.Query) ([]zenithdb.Record, error) {
 	return c.pick().FindMany(ctx, model, query)
+}
+
+func (c *Client) Count(ctx context.Context, model string, query zenithdb.Query) (int, error) {
+	return c.pick().Count(ctx, model, query)
 }

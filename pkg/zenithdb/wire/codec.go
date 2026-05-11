@@ -20,8 +20,14 @@ const (
 	opCreate byte = iota + 1
 	opUpdate
 	opDelete
+	opUpsert
+	opBatch
+	opCreateMany
+	opUpdateMany
+	opDeleteMany
 	opFindUnique
 	opFindMany
+	opCount
 	opCheckpoint
 	opPullSchema
 	opValidateSchema
@@ -285,13 +291,21 @@ func readIncludeMap(r *bytes.Reader) (map[string]zenithdb.Include, error) {
 
 func writeQuery(w io.Writer, query zenithdb.Query) {
 	writeStringMap(w, query.Where)
+	writeFilterMap(w, query.Filters)
 	writeString(w, query.Index)
 	writeInt64(w, int64(query.Limit))
+	writeInt64(w, int64(query.Skip))
+	writeStringMap(w, query.Cursor)
+	writeOrderBy(w, query.OrderBy)
 	writeIncludeMap(w, query.Include)
 }
 
 func readQuery(r *bytes.Reader) (zenithdb.Query, error) {
 	where, err := readStringMap(r)
+	if err != nil {
+		return zenithdb.Query{}, err
+	}
+	filters, err := readFilterMap(r)
 	if err != nil {
 		return zenithdb.Query{}, err
 	}
@@ -303,11 +317,244 @@ func readQuery(r *bytes.Reader) (zenithdb.Query, error) {
 	if err != nil {
 		return zenithdb.Query{}, err
 	}
+	skip, err := readInt64(r)
+	if err != nil {
+		return zenithdb.Query{}, err
+	}
+	cursor, err := readStringMap(r)
+	if err != nil {
+		return zenithdb.Query{}, err
+	}
+	orderBy, err := readOrderBy(r)
+	if err != nil {
+		return zenithdb.Query{}, err
+	}
 	include, err := readIncludeMap(r)
 	if err != nil {
 		return zenithdb.Query{}, err
 	}
-	return zenithdb.Query{Where: where, Index: index, Limit: int(limit), Include: include}, nil
+	return zenithdb.Query{Where: where, Filters: filters, Index: index, Limit: int(limit), Skip: int(skip), Cursor: cursor, OrderBy: orderBy, Include: include}, nil
+}
+
+func writeFilterMap(w io.Writer, filters map[string]zenithdb.Filter) {
+	writeUint32(w, uint32(len(filters)))
+	for field, filter := range filters {
+		writeString(w, field)
+		writeValue(w, filter.Equals)
+		writeUint32(w, uint32(len(filter.In)))
+		for _, value := range filter.In {
+			writeValue(w, value)
+		}
+		writeString(w, filter.Contains)
+		writeValue(w, filter.GT)
+		writeValue(w, filter.GTE)
+		writeValue(w, filter.LT)
+		writeValue(w, filter.LTE)
+	}
+}
+
+func readFilterMap(r *bytes.Reader) (map[string]zenithdb.Filter, error) {
+	size, err := readUint32(r)
+	if err != nil {
+		return nil, err
+	}
+	if size == 0 {
+		return nil, nil
+	}
+	filters := make(map[string]zenithdb.Filter, size)
+	for i := uint32(0); i < size; i++ {
+		field, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		equals, err := readValue(r)
+		if err != nil {
+			return nil, err
+		}
+		inSize, err := readUint32(r)
+		if err != nil {
+			return nil, err
+		}
+		in := make([]any, 0, inSize)
+		for j := uint32(0); j < inSize; j++ {
+			value, err := readValue(r)
+			if err != nil {
+				return nil, err
+			}
+			in = append(in, value)
+		}
+		contains, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		gt, err := readValue(r)
+		if err != nil {
+			return nil, err
+		}
+		gte, err := readValue(r)
+		if err != nil {
+			return nil, err
+		}
+		lt, err := readValue(r)
+		if err != nil {
+			return nil, err
+		}
+		lte, err := readValue(r)
+		if err != nil {
+			return nil, err
+		}
+		filters[field] = zenithdb.Filter{Equals: equals, In: in, Contains: contains, GT: gt, GTE: gte, LT: lt, LTE: lte}
+	}
+	return filters, nil
+}
+
+func writeOrderBy(w io.Writer, orderBy []zenithdb.OrderBy) {
+	writeUint32(w, uint32(len(orderBy)))
+	for _, order := range orderBy {
+		writeString(w, order.Field)
+		writeString(w, string(order.Direction))
+	}
+}
+
+func readOrderBy(r *bytes.Reader) ([]zenithdb.OrderBy, error) {
+	size, err := readUint32(r)
+	if err != nil {
+		return nil, err
+	}
+	orderBy := make([]zenithdb.OrderBy, 0, size)
+	for i := uint32(0); i < size; i++ {
+		field, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		direction, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		orderBy = append(orderBy, zenithdb.OrderBy{Field: field, Direction: zenithdb.SortDirection(direction)})
+	}
+	return orderBy, nil
+}
+
+func writeBatchOperations(w io.Writer, operations []zenithdb.BatchOperation) {
+	writeUint32(w, uint32(len(operations)))
+	for _, operation := range operations {
+		writeString(w, string(operation.Type))
+		writeString(w, operation.Model)
+		writeStringMap(w, operation.Where)
+		writeRecord(w, operation.Record)
+	}
+}
+
+func readBatchOperations(r *bytes.Reader) ([]zenithdb.BatchOperation, error) {
+	size, err := readUint32(r)
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]zenithdb.BatchOperation, 0, size)
+	for i := uint32(0); i < size; i++ {
+		operationType, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		model, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		where, err := readStringMap(r)
+		if err != nil {
+			return nil, err
+		}
+		record, err := readRecord(r)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, zenithdb.BatchOperation{Type: zenithdb.BatchOperationType(operationType), Model: model, Where: where, Record: record})
+	}
+	return operations, nil
+}
+
+func writeBatchResults(w io.Writer, results []zenithdb.BatchResult) {
+	writeUint32(w, uint32(len(results)))
+	for _, result := range results {
+		writeString(w, string(result.Type))
+		writeString(w, result.Model)
+		writeString(w, result.Key)
+		writeRecord(w, result.Record)
+	}
+}
+
+func readBatchResults(r *bytes.Reader) ([]zenithdb.BatchResult, error) {
+	size, err := readUint32(r)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]zenithdb.BatchResult, 0, size)
+	for i := uint32(0); i < size; i++ {
+		operationType, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		model, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		key, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		record, err := readRecord(r)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, zenithdb.BatchResult{Type: zenithdb.BatchOperationType(operationType), Model: model, Key: key, Record: record})
+	}
+	return results, nil
+}
+
+func writeMutationResults(w io.Writer, results []zenithdb.MutationResult) {
+	writeUint32(w, uint32(len(results)))
+	for _, result := range results {
+		writeString(w, result.Model)
+		writeString(w, result.Key)
+	}
+}
+
+func readMutationResults(r *bytes.Reader) ([]zenithdb.MutationResult, error) {
+	size, err := readUint32(r)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]zenithdb.MutationResult, 0, size)
+	for i := uint32(0); i < size; i++ {
+		model, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		key, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, zenithdb.MutationResult{Model: model, Key: key})
+	}
+	return results, nil
+}
+
+func writeManyResult(w io.Writer, result zenithdb.ManyResult) {
+	writeString(w, result.Model)
+	writeInt64(w, int64(result.Count))
+}
+
+func readManyResult(r *bytes.Reader) (zenithdb.ManyResult, error) {
+	model, err := readString(r)
+	if err != nil {
+		return zenithdb.ManyResult{}, err
+	}
+	count, err := readInt64(r)
+	if err != nil {
+		return zenithdb.ManyResult{}, err
+	}
+	return zenithdb.ManyResult{Model: model, Count: int(count)}, nil
 }
 
 func writeValue(w io.Writer, value any) {

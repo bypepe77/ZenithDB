@@ -78,6 +78,77 @@ func TestIncludeManyRelationUsesForeignKeyIndex(t *testing.T) {
 	}
 }
 
+func TestFindManySupportsFiltersOrderAndPagination(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	_, err := db.Create(ctx, "User", Record{"id": "u1", "email": "ada@example.com", "name": "Ada"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	for _, post := range []Record{
+		{"id": "p1", "authorId": "u1", "title": "Alpha"},
+		{"id": "p2", "authorId": "u1", "title": "Beta"},
+		{"id": "p3", "authorId": "u1", "title": "Gamma"},
+	} {
+		if _, err := db.Create(ctx, "Post", post); err != nil {
+			t.Fatalf("create post: %v", err)
+		}
+	}
+
+	posts, err := db.FindMany(ctx, "Post", Query{
+		Where: map[string]any{"authorId": "u1"},
+		Filters: map[string]Filter{
+			"title": {In: []any{"Alpha", "Gamma"}},
+		},
+		OrderBy: []OrderBy{{Field: "title", Direction: SortDesc}},
+		Skip:    1,
+		Limit:   1,
+	})
+	if err != nil {
+		t.Fatalf("find many: %v", err)
+	}
+	if len(posts) != 1 || posts[0]["title"] != "Alpha" {
+		t.Fatalf("unexpected ordered page: %+v", posts)
+	}
+	nextPosts, err := db.FindMany(ctx, "Post", Query{
+		Where:   map[string]any{"authorId": "u1"},
+		OrderBy: []OrderBy{{Field: "title", Direction: SortAsc}},
+		Cursor:  map[string]any{"id": "p1"},
+		Limit:   1,
+	})
+	if err != nil {
+		t.Fatalf("find many cursor: %v", err)
+	}
+	if len(nextPosts) != 1 || nextPosts[0]["title"] != "Beta" {
+		t.Fatalf("unexpected cursor page: %+v", nextPosts)
+	}
+	count, err := db.Count(ctx, "Post", Query{
+		Where: map[string]any{"authorId": "u1"},
+		Filters: map[string]Filter{
+			"title": {Contains: "a"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected count 3, got %d", count)
+	}
+
+	contains, err := db.FindMany(ctx, "Post", Query{
+		Filters: map[string]Filter{
+			"title": {Contains: "amm"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("find many contains: %v", err)
+	}
+	if len(contains) != 1 || contains[0]["title"] != "Gamma" {
+		t.Fatalf("unexpected contains result: %+v", contains)
+	}
+}
+
 func TestWALReplayRestoresRecords(t *testing.T) {
 	ctx := context.Background()
 	walPath := filepath.Join(t.TempDir(), "zenith.wal")
@@ -113,6 +184,192 @@ func TestWALReplayRestoresRecords(t *testing.T) {
 	}
 	if user["name"] != "Ada Lovelace" {
 		t.Fatalf("unexpected replayed name: %v", user["name"])
+	}
+}
+
+func TestUpsertCreatesUpdatesAndReplaysFromWAL(t *testing.T) {
+	ctx := context.Background()
+	walPath := filepath.Join(t.TempDir(), "zenith.wal")
+	db, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	user, created, err := db.Upsert(ctx, "User",
+		map[string]any{"email": "ada@example.com"},
+		Record{"id": "u1", "email": "ada@example.com", "name": "Ada"},
+		Record{"name": "Ada Lovelace"},
+	)
+	if err != nil {
+		t.Fatalf("upsert create: %v", err)
+	}
+	if !created || user["name"] != "Ada" {
+		t.Fatalf("unexpected created upsert: created=%v user=%+v", created, user)
+	}
+	user, created, err = db.Upsert(ctx, "User",
+		map[string]any{"email": "ada@example.com"},
+		Record{"id": "u2", "email": "ada@example.com", "name": "Duplicate"},
+		Record{"name": "Ada Lovelace"},
+	)
+	if err != nil {
+		t.Fatalf("upsert update: %v", err)
+	}
+	if created || user["id"] != "u1" || user["name"] != "Ada Lovelace" {
+		t.Fatalf("unexpected updated upsert: created=%v user=%+v", created, user)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+	replayed, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u1"}, nil)
+	if err != nil {
+		t.Fatalf("find replayed upsert: %v", err)
+	}
+	if !ok || replayed["name"] != "Ada Lovelace" {
+		t.Fatalf("unexpected replayed upsert: ok=%v user=%+v", ok, replayed)
+	}
+}
+
+func TestBatchIsAtomicAndReplaysFromWAL(t *testing.T) {
+	ctx := context.Background()
+	walPath := filepath.Join(t.TempDir(), "zenith.wal")
+	db, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	results, err := db.Batch(ctx, []BatchOperation{
+		{Type: BatchCreate, Model: "User", Record: Record{"id": "u1", "email": "ada@example.com", "name": "Ada"}},
+		{Type: BatchCreate, Model: "Post", Record: Record{"id": "p1", "authorId": "u1", "title": "First"}},
+	})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 batch results, got %d", len(results))
+	}
+
+	_, err = db.Batch(ctx, []BatchOperation{
+		{Type: BatchCreate, Model: "Post", Record: Record{"id": "p2", "authorId": "u1", "title": "Second"}},
+		{Type: BatchCreate, Model: "User", Record: Record{"id": "u2", "email": "ada@example.com", "name": "Duplicate Email"}},
+	})
+	if err == nil {
+		t.Fatal("expected batch conflict")
+	}
+	posts, err := db.FindMany(ctx, "Post", Query{Where: map[string]any{"id": "p2"}})
+	if err != nil {
+		t.Fatalf("find p2: %v", err)
+	}
+	if len(posts) != 0 {
+		t.Fatalf("failed batch left partial post: %+v", posts)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+	user, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u1"}, nil)
+	if err != nil {
+		t.Fatalf("find replayed user: %v", err)
+	}
+	if !ok || user["email"] != "ada@example.com" {
+		t.Fatalf("unexpected replayed user: found=%v user=%+v", ok, user)
+	}
+	replayedPosts, err := reopened.FindMany(ctx, "Post", Query{Where: map[string]any{"authorId": "u1"}})
+	if err != nil {
+		t.Fatalf("find replayed posts: %v", err)
+	}
+	if len(replayedPosts) != 1 {
+		t.Fatalf("expected one replayed post, got %+v", replayedPosts)
+	}
+}
+
+func TestManyMutationsAreAtomicAndReplayFromWAL(t *testing.T) {
+	ctx := context.Background()
+	walPath := filepath.Join(t.TempDir(), "zenith.wal")
+	db, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	created, err := db.CreateMany(ctx, "User", []Record{
+		{"id": "u1", "email": "ada@example.com", "name": "Ada"},
+		{"id": "u2", "email": "grace@example.com", "name": "Grace"},
+		{"id": "u3", "email": "delete@example.com", "name": "Delete Me"},
+	})
+	if err != nil {
+		t.Fatalf("create many: %v", err)
+	}
+	if len(created) != 3 {
+		t.Fatalf("expected 3 created records, got %d", len(created))
+	}
+
+	_, err = db.CreateMany(ctx, "User", []Record{
+		{"id": "u4", "email": "new@example.com", "name": "New"},
+		{"id": "u5", "email": "ada@example.com", "name": "Duplicate Email"},
+	})
+	if err == nil {
+		t.Fatal("expected create many conflict")
+	}
+	partial, ok, err := db.FindUnique(ctx, "User", map[string]any{"id": "u4"}, nil)
+	if err != nil {
+		t.Fatalf("find partial create many: %v", err)
+	}
+	if ok {
+		t.Fatalf("failed create many left partial record: %+v", partial)
+	}
+
+	updated, err := db.UpdateMany(ctx, "User", Query{
+		Filters: map[string]Filter{"email": {Contains: "example.com"}},
+	}, Record{"name": "Human"})
+	if err != nil {
+		t.Fatalf("update many: %v", err)
+	}
+	if updated.Count != 3 {
+		t.Fatalf("expected 3 updated records, got %d", updated.Count)
+	}
+
+	deleted, err := db.DeleteMany(ctx, "User", Query{
+		Where: map[string]any{"email": "delete@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("delete many: %v", err)
+	}
+	if deleted.Count != 1 {
+		t.Fatalf("expected 1 deleted record, got %d", deleted.Count)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+	user, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u1"}, nil)
+	if err != nil {
+		t.Fatalf("find replayed user: %v", err)
+	}
+	if !ok || user["name"] != "Human" {
+		t.Fatalf("unexpected replayed bulk update: found=%v user=%+v", ok, user)
+	}
+	deletedUser, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u3"}, nil)
+	if err != nil {
+		t.Fatalf("find replayed deleted user: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected replayed bulk delete to remove u3, got %+v", deletedUser)
 	}
 }
 

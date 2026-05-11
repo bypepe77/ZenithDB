@@ -88,6 +88,17 @@ func (c *Client) Create(ctx context.Context, model string, record zenithdb.Recor
 	return zenithdb.MutationResult{Model: resultModel, Key: key}, nil
 }
 
+func (c *Client) CreateMany(ctx context.Context, model string, records []zenithdb.Record) ([]zenithdb.MutationResult, error) {
+	var request bytes.Buffer
+	writeString(&request, model)
+	writeRecordSlice(&request, records)
+	response, err := c.roundTrip(ctx, opCreateMany, request.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	return readMutationResults(bytes.NewReader(response))
+}
+
 func (c *Client) Update(ctx context.Context, model string, where map[string]any, patch zenithdb.Record) (zenithdb.Record, error) {
 	var request bytes.Buffer
 	writeString(&request, model)
@@ -100,6 +111,18 @@ func (c *Client) Update(ctx context.Context, model string, where map[string]any,
 	return readRecord(bytes.NewReader(response))
 }
 
+func (c *Client) UpdateMany(ctx context.Context, model string, query zenithdb.Query, patch zenithdb.Record) (zenithdb.ManyResult, error) {
+	var request bytes.Buffer
+	writeString(&request, model)
+	writeQuery(&request, query)
+	writeRecord(&request, patch)
+	response, err := c.roundTrip(ctx, opUpdateMany, request.Bytes())
+	if err != nil {
+		return zenithdb.ManyResult{}, err
+	}
+	return readManyResult(bytes.NewReader(response))
+}
+
 func (c *Client) Delete(ctx context.Context, model string, where map[string]any) (zenithdb.Record, error) {
 	var request bytes.Buffer
 	writeString(&request, model)
@@ -109,6 +132,46 @@ func (c *Client) Delete(ctx context.Context, model string, where map[string]any)
 		return nil, err
 	}
 	return readRecord(bytes.NewReader(response))
+}
+
+func (c *Client) DeleteMany(ctx context.Context, model string, query zenithdb.Query) (zenithdb.ManyResult, error) {
+	var request bytes.Buffer
+	writeString(&request, model)
+	writeQuery(&request, query)
+	response, err := c.roundTrip(ctx, opDeleteMany, request.Bytes())
+	if err != nil {
+		return zenithdb.ManyResult{}, err
+	}
+	return readManyResult(bytes.NewReader(response))
+}
+
+func (c *Client) Upsert(ctx context.Context, model string, where map[string]any, createRecord zenithdb.Record, updatePatch zenithdb.Record) (zenithdb.Record, bool, error) {
+	var request bytes.Buffer
+	writeString(&request, model)
+	writeStringMap(&request, where)
+	writeRecord(&request, createRecord)
+	writeRecord(&request, updatePatch)
+	response, err := c.roundTrip(ctx, opUpsert, request.Bytes())
+	if err != nil {
+		return nil, false, err
+	}
+	reader := bytes.NewReader(response)
+	created, err := readBool(reader)
+	if err != nil {
+		return nil, false, err
+	}
+	record, err := readRecord(reader)
+	return record, created, err
+}
+
+func (c *Client) Batch(ctx context.Context, operations []zenithdb.BatchOperation) ([]zenithdb.BatchResult, error) {
+	var request bytes.Buffer
+	writeBatchOperations(&request, operations)
+	response, err := c.roundTrip(ctx, opBatch, request.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	return readBatchResults(bytes.NewReader(response))
 }
 
 func (c *Client) FindUnique(ctx context.Context, model string, where map[string]any, include map[string]zenithdb.Include) (zenithdb.Record, bool, error) {
@@ -138,6 +201,18 @@ func (c *Client) FindMany(ctx context.Context, model string, query zenithdb.Quer
 		return nil, err
 	}
 	return readRecordSlice(bytes.NewReader(response))
+}
+
+func (c *Client) Count(ctx context.Context, model string, query zenithdb.Query) (int, error) {
+	var request bytes.Buffer
+	writeString(&request, model)
+	writeQuery(&request, query)
+	response, err := c.roundTrip(ctx, opCount, request.Bytes())
+	if err != nil {
+		return 0, err
+	}
+	count, err := readInt64(bytes.NewReader(response))
+	return int(count), err
 }
 
 func (c *Client) Checkpoint(ctx context.Context) error {
