@@ -9,6 +9,7 @@ persistence, and schema compilation for low-overhead query paths.
 ## Repository Layout
 
 ```txt
+cmd/zenith/                Developer CLI
 pkg/zenithdb/              Core public Go engine
 pkg/zenithdb/compiler/     Prisma-like schema parser and Go schema generator
 benchmarks/                Throughput and allocation benchmarks
@@ -24,8 +25,44 @@ benchmarks/                Throughput and allocation benchmarks
 - Snapshot save/load primitives.
 - Prisma-like schema parser foundation.
 - Go schema generator foundation.
+- Developer CLI with `init`, `validate`, `bench`, and `repl`.
 - Dedicated benchmark package with raw map baseline comparison.
 - Focused tests for indexed reads, relations, WAL replay, and snapshots.
+
+## CLI
+
+Create a starter schema:
+
+```bash
+go run ./cmd/zenith init
+```
+
+Validate the schema:
+
+```bash
+go run ./cmd/zenith validate
+```
+
+Run a quick in-process read benchmark:
+
+```bash
+go run ./cmd/zenith bench -records 100000 -queries 1000000
+```
+
+Open a tiny REPL:
+
+```bash
+go run ./cmd/zenith repl
+```
+
+Example REPL commands:
+
+```txt
+create User id=u1 email=ada@example.com name=Ada
+find User id=u1
+list User
+exit
+```
 
 ## Example
 
