@@ -4,16 +4,21 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/bypepe77/ZenithDB/pkg/zenithdb"
 )
 
 type Options struct {
-	Token        string
-	SchemaSource string
+	Token            string
+	SchemaSource     string
+	SchemaHash       string
+	HandshakeTimeout time.Duration
 }
 
 type Server struct {
@@ -22,6 +27,9 @@ type Server struct {
 }
 
 func NewServer(db *zenithdb.DB, options Options) *Server {
+	if options.HandshakeTimeout == 0 {
+		options.HandshakeTimeout = 5 * time.Second
+	}
 	return &Server{db: db, options: options}
 }
 
@@ -40,12 +48,16 @@ func (s *Server) handleConn(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
+	_ = conn.SetDeadline(time.Now().Add(s.options.HandshakeTimeout))
 	if err := s.readHandshake(reader); err != nil {
 		_ = writeErrorResponse(writer, err)
 		_ = writer.Flush()
 		return
 	}
-	if err := writeResponse(writer, nil); err != nil {
+	_ = conn.SetDeadline(time.Time{})
+	var handshakeResponse bytes.Buffer
+	writeString(&handshakeResponse, s.options.SchemaHash)
+	if err := writeResponse(writer, handshakeResponse.Bytes()); err != nil {
 		return
 	}
 	if err := writer.Flush(); err != nil {
@@ -80,19 +92,34 @@ func (s *Server) readHandshake(reader *bufio.Reader) error {
 	if string(magic) != protocolMagic {
 		return fmt.Errorf("invalid wire protocol magic")
 	}
-	sizeRaw := make([]byte, 4)
-	if _, err := io.ReadFull(reader, sizeRaw); err != nil {
+	version, err := readUint16FromReader(reader)
+	if err != nil {
 		return err
 	}
-	tokenSize := int(sizeRaw[0])<<24 | int(sizeRaw[1])<<16 | int(sizeRaw[2])<<8 | int(sizeRaw[3])
-	tokenRaw := make([]byte, tokenSize)
-	if _, err := io.ReadFull(reader, tokenRaw); err != nil {
+	if version != protocolVersion {
+		return fmt.Errorf("unsupported wire protocol version %d", version)
+	}
+	token, err := readStringFromReader(reader)
+	if err != nil {
 		return err
 	}
-	if s.options.Token != "" && string(tokenRaw) != s.options.Token {
+	clientSchemaHash, err := readStringFromReader(reader)
+	if err != nil {
+		return err
+	}
+	if s.options.Token != "" && !secureEqual(s.options.Token, token) {
 		return fmt.Errorf("unauthorized")
 	}
+	if s.options.SchemaHash != "" && clientSchemaHash != "" && !secureEqual(s.options.SchemaHash, clientSchemaHash) {
+		return fmt.Errorf("schema hash mismatch")
+	}
 	return nil
+}
+
+func secureEqual(expected string, actual string) bool {
+	expectedHash := sha256.Sum256([]byte(expected))
+	actualHash := sha256.Sum256([]byte(actual))
+	return subtle.ConstantTimeCompare(expectedHash[:], actualHash[:]) == 1
 }
 
 func (s *Server) handleRequest(ctx context.Context, op byte, payload []byte) ([]byte, error) {

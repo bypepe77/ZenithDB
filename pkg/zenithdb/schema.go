@@ -1,6 +1,11 @@
 package zenithdb
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+)
 
 // FieldKind describes the storage-level type ZenithDB understands.
 type FieldKind string
@@ -53,6 +58,19 @@ type Schema struct {
 // Validate checks model names, fields, indexes, primary keys, and relations.
 func (s Schema) Validate() error {
 	return s.validate()
+}
+
+// Hash returns a stable fingerprint for schema compatibility checks.
+func (s Schema) Hash() (string, error) {
+	if err := s.validate(); err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s Schema) validate() error {

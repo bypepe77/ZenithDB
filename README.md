@@ -28,6 +28,8 @@ benchmarks/                Throughput and allocation benchmarks
 - Prisma-like schema parser foundation.
 - Go schema generator with Prisma-like `FindUnique` and `FindMany` argument types.
 - Binary TCP wire protocol for remote data operations.
+- Versioned wire handshake with schema hash compatibility checks and bounded frames.
+- Pooled remote client connections for concurrent callers.
 - HTTP control plane for health, schema metadata, and checkpoint operations.
 - Developer CLI with `init`, `validate`, `generate`, `bench`, `repl`, `serve`, and remote schema commands.
 - Dedicated benchmark package with raw map baseline comparison.

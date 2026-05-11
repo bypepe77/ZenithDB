@@ -106,6 +106,8 @@ model Post {
 		"type Client struct",
 		"remote bool",
 		"options.WireURL",
+		"remote.OpenWithOptions",
+		"Schema.Hash()",
 		"if c.client.remote",
 		"type User struct",
 		"type UserCreateInput struct",

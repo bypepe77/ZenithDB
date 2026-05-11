@@ -14,6 +14,8 @@ import (
 
 const (
 	protocolMagic = "ZDBW1"
+	protocolVersion uint16 = 1
+	maxFramePayloadBytes = 64 << 20
 
 	opCreate byte = iota + 1
 	opUpdate
@@ -37,6 +39,9 @@ const (
 )
 
 func writeFrame(w io.Writer, op byte, payload []byte) error {
+	if len(payload) > maxFramePayloadBytes {
+		return fmt.Errorf("wire frame payload exceeds %d bytes", maxFramePayloadBytes)
+	}
 	header := [5]byte{op}
 	binary.BigEndian.PutUint32(header[1:], uint32(len(payload)))
 	if _, err := w.Write(header[:]); err != nil {
@@ -52,6 +57,9 @@ func readFrame(r io.Reader) (byte, []byte, error) {
 		return 0, nil, err
 	}
 	size := binary.BigEndian.Uint32(header[1:])
+	if size > maxFramePayloadBytes {
+		return 0, nil, fmt.Errorf("wire frame payload exceeds %d bytes", maxFramePayloadBytes)
+	}
 	payload := make([]byte, size)
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return 0, nil, err
@@ -119,6 +127,36 @@ func writeUint32(w io.Writer, value uint32) {
 	var raw [4]byte
 	binary.BigEndian.PutUint32(raw[:], value)
 	_, _ = w.Write(raw[:])
+}
+
+func writeUint16(w io.Writer, value uint16) {
+	var raw [2]byte
+	binary.BigEndian.PutUint16(raw[:], value)
+	_, _ = w.Write(raw[:])
+}
+
+func readUint16FromReader(r io.Reader) (uint16, error) {
+	var raw [2]byte
+	if _, err := io.ReadFull(r, raw[:]); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint16(raw[:]), nil
+}
+
+func readStringFromReader(r io.Reader) (string, error) {
+	var rawSize [4]byte
+	if _, err := io.ReadFull(r, rawSize[:]); err != nil {
+		return "", err
+	}
+	size := binary.BigEndian.Uint32(rawSize[:])
+	if size > maxFramePayloadBytes {
+		return "", fmt.Errorf("wire string exceeds %d bytes", maxFramePayloadBytes)
+	}
+	raw := make([]byte, size)
+	if _, err := io.ReadFull(r, raw); err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func readUint32(r *bytes.Reader) (uint32, error) {

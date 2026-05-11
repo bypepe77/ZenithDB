@@ -19,8 +19,22 @@ type Client struct {
 	mu     sync.Mutex
 }
 
+type DialOptions struct {
+	ConnectionURL   string
+	SchemaHash      string
+	HandshakeTimeout time.Duration
+}
+
 func Dial(ctx context.Context, connectionURL string) (*Client, error) {
-	options, err := zenithdb.ParseConnectionURL(connectionURL)
+	return DialWithOptions(ctx, DialOptions{ConnectionURL: connectionURL})
+}
+
+func DialWithOptions(ctx context.Context, dialOptions DialOptions) (*Client, error) {
+	if dialOptions.HandshakeTimeout == 0 {
+		dialOptions.HandshakeTimeout = 5 * time.Second
+	}
+
+	options, err := zenithdb.ParseConnectionURL(dialOptions.ConnectionURL)
 	if err != nil {
 		return nil, err
 	}
@@ -32,15 +46,21 @@ func Dial(ctx context.Context, connectionURL string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(dialOptions.HandshakeTimeout))
+	}
 	client := &Client{
 		conn:   conn,
 		reader: bufio.NewReader(conn),
 		writer: bufio.NewWriter(conn),
 	}
-	if err := client.handshake(options.AuthToken); err != nil {
+	if err := client.handshake(options.AuthToken, dialOptions.SchemaHash); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return client, nil
 }
 
@@ -140,17 +160,26 @@ func (c *Client) ValidateSchema(ctx context.Context, schema string) error {
 	return err
 }
 
-func (c *Client) handshake(token string) error {
+func (c *Client) handshake(token string, schemaHash string) error {
 	var request bytes.Buffer
 	_, _ = request.WriteString(protocolMagic)
+	writeUint16(&request, protocolVersion)
 	writeString(&request, token)
+	writeString(&request, schemaHash)
 	if _, err := c.writer.Write(request.Bytes()); err != nil {
 		return err
 	}
 	if err := c.writer.Flush(); err != nil {
 		return err
 	}
-	_, err := readResponse(c.reader)
+	response, err := readResponse(c.reader)
+	if err != nil {
+		return err
+	}
+	if len(response) == 0 {
+		return nil
+	}
+	_, err = readString(bytes.NewReader(response))
 	return err
 }
 

@@ -74,7 +74,7 @@ func writeClient(buffer *bytes.Buffer, schema zenithdb.Schema) {
 	fmt.Fprintf(buffer, "func Open(ctx context.Context, options zenithdb.Options) (*Client, error) {\n")
 	fmt.Fprintf(buffer, "db, err := zenithdb.Open(ctx, Schema, options)\nif err != nil {\nreturn nil, err\n}\n")
 	fmt.Fprintf(buffer, "return newClientFromEngine(ctx, db, true, false)\n}\n\n")
-	fmt.Fprintf(buffer, "func OpenURL(ctx context.Context, connectionURL string) (*Client, error) {\noptions, err := zenithdb.ParseConnectionURL(connectionURL)\nif err != nil {\nreturn nil, err\n}\nif options.WireURL != \"\" {\ndb, err := remote.Open(connectionURL)\nif err != nil {\nreturn nil, err\n}\nreturn newClientFromEngine(ctx, db, false, true)\n}\nreturn Open(ctx, zenithdb.Options{ConnectionURL: connectionURL})\n}\n\n")
+	fmt.Fprintf(buffer, "func OpenURL(ctx context.Context, connectionURL string) (*Client, error) {\noptions, err := zenithdb.ParseConnectionURL(connectionURL)\nif err != nil {\nreturn nil, err\n}\nif options.WireURL != \"\" {\nschemaHash, err := Schema.Hash()\nif err != nil {\nreturn nil, err\n}\ndb, err := remote.OpenWithOptions(ctx, remote.OpenOptions{ConnectionURL: connectionURL, SchemaHash: schemaHash})\nif err != nil {\nreturn nil, err\n}\nreturn newClientFromEngine(ctx, db, false, true)\n}\nreturn Open(ctx, zenithdb.Options{ConnectionURL: connectionURL})\n}\n\n")
 	fmt.Fprintf(buffer, "func (c *Client) Close() error {\nreturn c.db.Close()\n}\n\n")
 	fmt.Fprintf(buffer, "func newClientFromEngine(ctx context.Context, db engine, preload bool, remote bool) (*Client, error) {\nclient := &Client{db: db, remote: remote}\n")
 	for _, model := range schema.Models {

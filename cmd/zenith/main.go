@@ -269,6 +269,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	schemaHash, err := schema.Hash()
+	if err != nil {
+		return err
+	}
 	options := zenithdb.Options{ConnectionURL: *connectionURL, DataDir: *dataDir}
 	db, err := zenithdb.Open(context.Background(), schema, options)
 	if err != nil {
@@ -282,7 +286,7 @@ func runServe(args []string) error {
 	}
 	defer wireListener.Close()
 
-	wireServer := wire.NewServer(db, wire.Options{Token: *token, SchemaSource: string(schemaSource)})
+	wireServer := wire.NewServer(db, wire.Options{Token: *token, SchemaSource: string(schemaSource), SchemaHash: schemaHash})
 	go func() {
 		_ = wireServer.Serve(wireListener)
 	}()
