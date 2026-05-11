@@ -146,6 +146,106 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDataDirRecoveryReplaysWAL(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), ".zenithdb")
+
+	db, err := Open(ctx, TestSchema(), Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	_, err = db.Create(ctx, "User", Record{"id": "u1", "email": "ada@example.com", "name": "Ada"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(ctx, TestSchema(), Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+
+	user, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u1"}, nil)
+	if err != nil {
+		t.Fatalf("find recovered user: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected recovered user")
+	}
+	if user["email"] != "ada@example.com" {
+		t.Fatalf("unexpected recovered email: %v", user["email"])
+	}
+}
+
+func TestOpenURLUsesLocalDataDir(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), ".zenithdb")
+	connectionURL := "zenith://local?dataDir=" + dataDir + "&sync=always"
+
+	db, err := OpenURL(ctx, TestSchema(), connectionURL)
+	if err != nil {
+		t.Fatalf("open url: %v", err)
+	}
+	_, err = db.Create(ctx, "User", Record{"id": "u1", "email": "ada@example.com", "name": "Ada"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := OpenURL(ctx, TestSchema(), connectionURL)
+	if err != nil {
+		t.Fatalf("reopen url: %v", err)
+	}
+	defer reopened.Close()
+
+	_, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u1"}, nil)
+	if err != nil {
+		t.Fatalf("find recovered user: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected recovered user")
+	}
+}
+
+func TestCheckpointLoadsSnapshotAndSkipsOldWAL(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), ".zenithdb")
+
+	db, err := Open(ctx, TestSchema(), Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	_, err = db.Create(ctx, "User", Record{"id": "u1", "email": "ada@example.com", "name": "Ada"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Checkpoint(ctx); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(ctx, TestSchema(), Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+
+	users, err := reopened.FindMany(ctx, "User", Query{Where: map[string]any{"id": "u1"}})
+	if err != nil {
+		t.Fatalf("find users: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("expected one checkpointed user, got %d", len(users))
+	}
+}
+
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
 

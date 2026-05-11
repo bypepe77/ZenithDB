@@ -10,6 +10,7 @@ persistence, and schema compilation for low-overhead query paths.
 
 ```txt
 cmd/zenith/                Developer CLI
+examples/hexagonal/        Hexagonal architecture integration example
 pkg/zenithdb/              Core public Go engine
 pkg/zenithdb/compiler/     Prisma-like schema parser and Go schema generator
 benchmarks/                Throughput and allocation benchmarks
@@ -21,11 +22,12 @@ benchmarks/                Throughput and allocation benchmarks
 - In-memory query engine with `Create`, `Update`, `Delete`, `FindUnique`, and `FindMany`.
 - Indexed lookups for primary keys, unique indexes, and secondary indexes.
 - Prisma-like relation expansion through `Include`.
-- Append-only WAL for durable mutations.
-- Snapshot save/load primitives.
+- Data directory persistence with manifest, WAL, snapshots, and automatic recovery.
+- Append-only WAL for durable mutations with configurable sync policy.
+- Checkpoint snapshots for faster recovery.
 - Prisma-like schema parser foundation.
-- Go schema generator foundation.
-- Developer CLI with `init`, `validate`, `bench`, and `repl`.
+- Go schema generator with Prisma-like `FindUnique` and `FindMany` argument types.
+- Developer CLI with `init`, `validate`, `generate`, `bench`, and `repl`.
 - Dedicated benchmark package with raw map baseline comparison.
 - Focused tests for indexed reads, relations, WAL replay, and snapshots.
 
@@ -43,6 +45,31 @@ Validate the schema:
 go run ./cmd/zenith validate
 ```
 
+Generate a typed Go client from the schema:
+
+```bash
+go run ./cmd/zenith generate
+```
+
+The default output is `zenith/generated.go`. It contains typed structs and
+model clients such as:
+
+```go
+client, err := zenith.Open(ctx, zenithdb.Options{
+	DataDir: ".zenithdb",
+})
+user, ok, err := client.User.FindUniqueByID(ctx, "u1")
+user, ok, err = client.User.FindUnique(ctx, zenith.UserFindUniqueArgs{
+	Where: zenith.UserWhereUniqueInput{ID: "u1"},
+	Include: &zenith.UserInclude{Posts: true},
+})
+posts, err := client.Post.FindManyByAuthorID(ctx, "u1", 50)
+posts, err = client.Post.FindMany(ctx, zenith.PostFindManyArgs{
+	Where: zenith.PostWhereInput{AuthorID: ptr("u1")},
+	Take:  50,
+})
+```
+
 Run a quick in-process read benchmark:
 
 ```bash
@@ -52,7 +79,7 @@ go run ./cmd/zenith bench -records 100000 -queries 1000000
 Open a tiny REPL:
 
 ```bash
-go run ./cmd/zenith repl
+go run ./cmd/zenith repl -data .zenithdb
 ```
 
 Example REPL commands:
@@ -87,7 +114,7 @@ schema := zenithdb.Schema{
 }
 
 db, err := zenithdb.Open(ctx, schema, zenithdb.Options{
-	WALPath: "data/zenith.wal",
+	DataDir: ".zenithdb",
 })
 if err != nil {
 	panic(err)
@@ -99,7 +126,27 @@ _, err = db.Create(ctx, "User", zenithdb.Record{
 	"email": "ada@example.com",
 	"name":  "Ada",
 })
+
+err = db.Checkpoint(ctx)
 ```
+
+## Persistence
+
+When `DataDir` is set, ZenithDB persists data under a product-style directory:
+
+```txt
+.zenithdb/
+  manifest.json
+  wal/
+    000001.wal
+  snapshots/
+    000001.snapshot.json
+  locks/
+    db.lock
+```
+
+Open recovery loads the latest checkpoint snapshot and replays WAL entries after
+that snapshot sequence. Writes append to the WAL before mutating memory.
 
 ## Prisma-like Schema Compiler
 

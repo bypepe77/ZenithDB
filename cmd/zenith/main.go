@@ -37,6 +37,8 @@ func run(args []string) error {
 		return runInit(args[1:])
 	case "validate":
 		return runValidate(args[1:])
+	case "generate":
+		return runGenerate(args[1:])
 	case "bench":
 		return runBench(args[1:])
 	case "repl":
@@ -87,6 +89,34 @@ func runValidate(args []string) error {
 		return err
 	}
 	printSchemaSummary(schema)
+	return nil
+}
+
+func runGenerate(args []string) error {
+	flags := flag.NewFlagSet("generate", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	schemaPath := flags.String("schema", defaultSchemaPath, "schema file path")
+	outputPath := flags.String("out", filepath.Join("zenith", "generated.go"), "generated Go file path")
+	packageName := flags.String("package", "zenith", "generated Go package name")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	schema, err := loadSchema(*schemaPath)
+	if err != nil {
+		return err
+	}
+	code, err := compiler.GenerateGoClient(*packageName, schema)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cleanPath(*outputPath)), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(*outputPath, code, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("generated %s\n", *outputPath)
 	return nil
 }
 
@@ -162,6 +192,8 @@ func runREPL(args []string) error {
 	flags := flag.NewFlagSet("repl", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	schemaPath := flags.String("schema", defaultSchemaPath, "schema file path")
+	connectionURL := flags.String("url", "", "connection URL")
+	dataDir := flags.String("data", "", "optional ZenithDB data directory")
 	walPath := flags.String("wal", "", "optional WAL path")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -171,7 +203,8 @@ func runREPL(args []string) error {
 	if err != nil {
 		return err
 	}
-	db, err := zenithdb.Open(context.Background(), schema, zenithdb.Options{WALPath: *walPath})
+	options := zenithdb.Options{ConnectionURL: *connectionURL, DataDir: *dataDir, WALPath: *walPath}
+	db, err := zenithdb.Open(context.Background(), schema, options)
 	if err != nil {
 		return err
 	}
@@ -346,8 +379,9 @@ func printUsage() {
 Usage:
   zenith init [-schema zenith.schema] [-force]
   zenith validate [-schema zenith.schema]
+  zenith generate [-schema zenith.schema] [-out zenith/generated.go] [-package zenith]
   zenith bench [-schema zenith.schema] [-model User] [-records 100000] [-queries 1000000]
-  zenith repl [-schema zenith.schema] [-wal data/zenith.wal]
+  zenith repl [-schema zenith.schema] [-data .zenithdb] [-wal data/zenith.wal]
 `)
 }
 

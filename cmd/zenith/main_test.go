@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bypepe77/ZenithDB/pkg/zenithdb"
@@ -28,6 +30,27 @@ func TestBenchCommand(t *testing.T) {
 	}
 	if err := run([]string{"bench", "-schema", schemaPath, "-records", "100", "-queries", "100"}); err != nil {
 		t.Fatalf("bench: %v", err)
+	}
+}
+
+func TestGenerateCommand(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "zenith.schema")
+	outputPath := filepath.Join(dir, "zenith", "generated.go")
+
+	if err := run([]string{"init", "-schema", schemaPath}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := run([]string{"generate", "-schema", schemaPath, "-out", outputPath, "-package", "zenith"}); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	code, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read generated code: %v", err)
+	}
+	if !strings.Contains(string(code), "type UserClient struct") {
+		t.Fatalf("generated code does not contain typed user client:\n%s", code)
 	}
 }
 

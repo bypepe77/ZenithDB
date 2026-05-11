@@ -20,20 +20,27 @@ const (
 )
 
 type operation struct {
-	Type   string         `json:"type"`
-	Model  string         `json:"model"`
-	Where  map[string]any `json:"where,omitempty"`
-	Record Record         `json:"record,omitempty"`
+	Sequence uint64         `json:"seq,omitempty"`
+	Type     string         `json:"type"`
+	Model    string         `json:"model"`
+	Where    map[string]any `json:"where,omitempty"`
+	Record   Record         `json:"record,omitempty"`
 }
 
 // WAL is an append-only operation log.
 type WAL struct {
-	mu   sync.Mutex
-	file *os.File
+	mu         sync.Mutex
+	file       *os.File
+	syncPolicy SyncPolicy
 }
 
 // OpenWAL opens or creates a write-ahead log.
 func OpenWAL(path string) (*WAL, error) {
+	return OpenWALWithSyncPolicy(path, SyncAlways)
+}
+
+// OpenWALWithSyncPolicy opens or creates a write-ahead log with the given sync policy.
+func OpenWALWithSyncPolicy(path string, syncPolicy SyncPolicy) (*WAL, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -43,7 +50,7 @@ func OpenWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 
-	return &WAL{file: file}, nil
+	return &WAL{file: file, syncPolicy: syncPolicy}, nil
 }
 
 // Append persists one operation and fsyncs it before returning.
@@ -63,11 +70,19 @@ func (wal *WAL) Append(ctx context.Context, operation operation) error {
 	if _, err := wal.file.Write(payload); err != nil {
 		return err
 	}
+	if wal.syncPolicy == SyncNever {
+		return nil
+	}
 	return wal.file.Sync()
 }
 
 // Replay applies every operation in log order.
 func (wal *WAL) Replay(ctx context.Context, apply func(operation) error) error {
+	return wal.ReplayFrom(ctx, 0, apply)
+}
+
+// ReplayFrom applies operations whose sequence is newer than afterSequence.
+func (wal *WAL) ReplayFrom(ctx context.Context, afterSequence uint64, apply func(operation) error) error {
 	wal.mu.Lock()
 	defer wal.mu.Unlock()
 
@@ -95,6 +110,9 @@ func (wal *WAL) Replay(ctx context.Context, apply func(operation) error) error {
 		decoder.UseNumber()
 		if err := decoder.Decode(&operation); err != nil {
 			return fmt.Errorf("wal line %d: %w", line, err)
+		}
+		if operation.Sequence != 0 && operation.Sequence <= afterSequence {
+			continue
 		}
 		if err := apply(operation); err != nil {
 			return fmt.Errorf("wal line %d: %w", line, err)

@@ -2,6 +2,7 @@ package benchmarks
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -91,6 +92,75 @@ func BenchmarkRawMapBaselineFindUnique(b *testing.B) {
 	}
 }
 
+func BenchmarkGeneratedShortcutFindUniqueByID(b *testing.B) {
+	users := seedGeneratedUserClient(seedSize)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, ok, err := users.FindUniqueByID(context.Background(), "u4242")
+		if err != nil {
+			b.Fatalf("find unique by id: %v", err)
+		}
+		if !ok {
+			b.Fatal("expected user")
+		}
+	}
+}
+
+func BenchmarkGeneratedPrismaLikeFindUnique(b *testing.B) {
+	users := seedGeneratedUserClient(seedSize)
+	args := benchmarkUserFindUniqueArgs{
+		Where: benchmarkUserWhereUniqueInput{ID: "u4242"},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, ok, err := users.FindUnique(context.Background(), args)
+		if err != nil {
+			b.Fatalf("find unique: %v", err)
+		}
+		if !ok {
+			b.Fatal("expected user")
+		}
+	}
+}
+
+func BenchmarkDataDirRecoveryFromWAL(b *testing.B) {
+	ctx := context.Background()
+	dataDir := seedPersistentUsers(b, 10_000, false)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db, err := zenithdb.Open(ctx, benchmarkSchema(), zenithdb.Options{DataDir: dataDir})
+		if err != nil {
+			b.Fatalf("open db: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			b.Fatalf("close db: %v", err)
+		}
+	}
+}
+
+func BenchmarkDataDirRecoveryFromCheckpoint(b *testing.B) {
+	ctx := context.Background()
+	dataDir := seedPersistentUsers(b, 10_000, true)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db, err := zenithdb.Open(ctx, benchmarkSchema(), zenithdb.Options{DataDir: dataDir})
+		if err != nil {
+			b.Fatalf("open db: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			b.Fatalf("close db: %v", err)
+		}
+	}
+}
+
 func seedUsers(b *testing.B, count int) *zenithdb.DB {
 	b.Helper()
 	ctx := context.Background()
@@ -142,6 +212,108 @@ func seedPosts(b *testing.B, count int) *zenithdb.DB {
 		_ = db.Close()
 	})
 	return db
+}
+
+func seedPersistentUsers(b *testing.B, count int, checkpoint bool) string {
+	b.Helper()
+	ctx := context.Background()
+	dataDir := filepath.Join(b.TempDir(), ".zenithdb")
+	db, err := zenithdb.Open(ctx, benchmarkSchema(), zenithdb.Options{DataDir: dataDir})
+	if err != nil {
+		b.Fatalf("open db: %v", err)
+	}
+	for i := 0; i < count; i++ {
+		id := "u" + strconv.Itoa(i)
+		_, err := db.Create(ctx, "User", zenithdb.Record{
+			"id":    id,
+			"email": id + "@example.com",
+			"name":  "User " + strconv.Itoa(i),
+		})
+		if err != nil {
+			b.Fatalf("create user: %v", err)
+		}
+	}
+	if checkpoint {
+		if err := db.Checkpoint(ctx); err != nil {
+			b.Fatalf("checkpoint: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		b.Fatalf("close db: %v", err)
+	}
+	return dataDir
+}
+
+type benchmarkUser struct {
+	ID    string
+	Email string
+	Name  string
+}
+
+type benchmarkUserClient struct {
+	store *benchmarkUserStore
+}
+
+type benchmarkUserStore struct {
+	byID map[string]benchmarkUser
+}
+
+type benchmarkUserWhereUniqueInput struct {
+	ID string
+}
+
+type benchmarkUserFindUniqueArgs struct {
+	Where benchmarkUserWhereUniqueInput
+}
+
+func (input benchmarkUserWhereUniqueInput) where() map[string]any {
+	if input.ID != "" {
+		return map[string]any{"id": input.ID}
+	}
+	return nil
+}
+
+func (c benchmarkUserClient) FindUnique(ctx context.Context, args benchmarkUserFindUniqueArgs) (benchmarkUser, bool, error) {
+	if args.Where.ID != "" {
+		record, ok := c.store.findByID(args.Where.ID)
+		return record, ok, nil
+	}
+	return benchmarkUser{}, false, nil
+}
+
+func (c benchmarkUserClient) FindUniqueByID(ctx context.Context, id string) (benchmarkUser, bool, error) {
+	record, ok := c.store.findByID(id)
+	return record, ok, nil
+}
+
+func seedGeneratedUserClient(count int) benchmarkUserClient {
+	store := &benchmarkUserStore{byID: make(map[string]benchmarkUser, count)}
+	for i := 0; i < count; i++ {
+		id := "u" + strconv.Itoa(i)
+		store.put(benchmarkUser{
+			ID:    id,
+			Email: id + "@example.com",
+			Name:  "User " + strconv.Itoa(i),
+		})
+	}
+	return benchmarkUserClient{store: store}
+}
+
+func (s *benchmarkUserStore) put(record benchmarkUser) {
+	s.byID[record.ID] = record
+}
+
+func (s *benchmarkUserStore) findByID(id string) (benchmarkUser, bool) {
+	record, ok := s.byID[id]
+	return record, ok
+}
+
+func recordToBenchmarkUser(record zenithdb.Record) benchmarkUser {
+	return benchmarkUser{
+		ID:    record["id"].(string),
+		Email: record["email"].(string),
+		Name:  record["name"].(string),
+	}
 }
 
 func benchmarkSchema() zenithdb.Schema {

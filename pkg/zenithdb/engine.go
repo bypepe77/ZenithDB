@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 )
 
@@ -12,7 +13,10 @@ var ErrNotFound = errors.New("record not found")
 
 // Options configures the database engine.
 type Options struct {
-	WALPath string
+	ConnectionURL string
+	DataDir       string
+	WALPath       string
+	SyncPolicy    SyncPolicy
 }
 
 // DB is the ZenithDB in-process engine.
@@ -21,10 +25,17 @@ type DB struct {
 	schema Schema
 	tables map[string]*table
 	wal    *WAL
+	storage *storageManager
+	sequence uint64
 }
 
 // Open creates an in-memory database and optionally replays its WAL.
 func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
+	var err error
+	options, err = resolveOptions(options)
+	if err != nil {
+		return nil, err
+	}
 	if err := schema.validate(); err != nil {
 		return nil, err
 	}
@@ -37,8 +48,48 @@ func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
 		db.tables[model.Name] = newTable(model)
 	}
 
+	if options.SyncPolicy == 0 {
+		options.SyncPolicy = SyncAlways
+	}
+
+	if options.DataDir != "" {
+		storage, err := openStorageManager(options.DataDir)
+		if err != nil {
+			return nil, err
+		}
+		db.storage = storage
+
+		if snapshotPath := storage.snapshotPath(); snapshotPath != "" {
+			if _, err := os.Stat(snapshotPath); err == nil {
+				if _, err := db.loadSnapshot(ctx, snapshotPath); err != nil {
+					_ = storage.Close()
+					return nil, err
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				_ = storage.Close()
+				return nil, err
+			}
+		}
+
+		wal, err := storage.openWAL(options.SyncPolicy)
+		if err != nil {
+			_ = storage.Close()
+			return nil, err
+		}
+		db.wal = wal
+		if err := wal.ReplayFrom(ctx, storage.manifest.SnapshotSequence, db.applyOperation); err != nil {
+			_ = wal.Close()
+			_ = storage.Close()
+			return nil, err
+		}
+		if db.sequence < storage.manifest.LastSequence {
+			db.sequence = storage.manifest.LastSequence
+		}
+		return db, nil
+	}
+
 	if options.WALPath != "" {
-		wal, err := OpenWAL(options.WALPath)
+		wal, err := OpenWALWithSyncPolicy(options.WALPath, options.SyncPolicy)
 		if err != nil {
 			return nil, err
 		}
@@ -52,14 +103,48 @@ func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
 	return db, nil
 }
 
+// OpenURL opens a database from a connection URL.
+func OpenURL(ctx context.Context, schema Schema, connectionURL string) (*DB, error) {
+	return Open(ctx, schema, Options{ConnectionURL: connectionURL})
+}
+
 // Close flushes and closes database resources.
 func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.wal == nil {
+		if db.storage != nil {
+			return db.storage.Close()
+		}
 		return nil
 	}
-	return db.wal.Close()
+	walErr := db.wal.Close()
+	var storageErr error
+	if db.storage != nil {
+		if err := db.storage.saveLastSequence(db.sequence); err != nil {
+			storageErr = err
+		}
+		if err := db.storage.Close(); err != nil {
+			storageErr = errors.Join(storageErr, err)
+		}
+	}
+	return errors.Join(walErr, storageErr)
+}
+
+// Checkpoint writes an atomic snapshot for faster future recovery.
+func (db *DB) Checkpoint(ctx context.Context) error {
+	if db.storage == nil {
+		return fmt.Errorf("checkpoint requires Options.DataDir")
+	}
+
+	db.mu.RLock()
+	sequence := db.sequence
+	db.mu.RUnlock()
+
+	if err := db.Snapshot(ctx, db.storage.checkpointPath()); err != nil {
+		return err
+	}
+	return db.storage.saveCheckpointManifest(ctx, sequence)
 }
 
 // Create inserts one record.
@@ -80,8 +165,10 @@ func (db *DB) Create(ctx context.Context, model string, record Record) (Mutation
 	if err != nil {
 		return MutationResult{}, err
 	}
+	sequence := db.nextSequenceLocked()
 	if db.wal != nil {
-		if err := db.wal.Append(ctx, operation{Type: opCreate, Model: model, Record: normalized}); err != nil {
+		if err := db.wal.Append(ctx, operation{Sequence: sequence, Type: opCreate, Model: model, Record: normalized}); err != nil {
+			db.sequence--
 			return MutationResult{}, err
 		}
 	}
@@ -108,8 +195,10 @@ func (db *DB) Update(ctx context.Context, model string, where map[string]any, pa
 	if err != nil {
 		return nil, err
 	}
+	sequence := db.nextSequenceLocked()
 	if db.wal != nil {
-		if err := db.wal.Append(ctx, operation{Type: opUpdate, Model: model, Where: where, Record: cloneRecord(patch)}); err != nil {
+		if err := db.wal.Append(ctx, operation{Sequence: sequence, Type: opUpdate, Model: model, Where: where, Record: cloneRecord(patch)}); err != nil {
+			db.sequence--
 			return nil, err
 		}
 	}
@@ -136,8 +225,10 @@ func (db *DB) Delete(ctx context.Context, model string, where map[string]any) (R
 	if err != nil {
 		return nil, err
 	}
+	sequence := db.nextSequenceLocked()
 	if db.wal != nil {
-		if err := db.wal.Append(ctx, operation{Type: opDelete, Model: model, Where: where}); err != nil {
+		if err := db.wal.Append(ctx, operation{Sequence: sequence, Type: opDelete, Model: model, Where: where}); err != nil {
+			db.sequence--
 			return nil, err
 		}
 	}
@@ -246,6 +337,9 @@ func (db *DB) applyOperation(operation operation) error {
 }
 
 func (db *DB) applyOperationLocked(operation operation) error {
+	if operation.Sequence > db.sequence {
+		db.sequence = operation.Sequence
+	}
 	table, err := db.table(operation.Model)
 	if err != nil {
 		return err
@@ -267,4 +361,9 @@ func (db *DB) applyOperationLocked(operation operation) error {
 	default:
 		return fmt.Errorf("unknown wal operation %q", operation.Type)
 	}
+}
+
+func (db *DB) nextSequenceLocked() uint64 {
+	db.sequence++
+	return db.sequence
 }

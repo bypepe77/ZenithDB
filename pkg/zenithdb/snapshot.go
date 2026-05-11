@@ -9,8 +9,9 @@ import (
 )
 
 type snapshotFile struct {
-	Version int                 `json:"version"`
-	Models  map[string][]Record `json:"models"`
+	Version  int                 `json:"version"`
+	Sequence uint64              `json:"sequence"`
+	Models   map[string][]Record `json:"models"`
 }
 
 // Snapshot writes a compact point-in-time image of the in-memory state.
@@ -21,8 +22,9 @@ func (db *DB) Snapshot(ctx context.Context, path string) error {
 
 	db.mu.RLock()
 	snapshot := snapshotFile{
-		Version: 1,
-		Models:  make(map[string][]Record, len(db.tables)),
+		Version:  1,
+		Sequence: db.sequence,
+		Models:   make(map[string][]Record, len(db.tables)),
 	}
 	for name, table := range db.tables {
 		records := make([]Record, 0, len(table.rows))
@@ -65,13 +67,18 @@ func (db *DB) Snapshot(ctx context.Context, path string) error {
 
 // LoadSnapshot replaces the current in-memory state with records from a snapshot.
 func (db *DB) LoadSnapshot(ctx context.Context, path string) error {
+	_, err := db.loadSnapshot(ctx, path)
+	return err
+}
+
+func (db *DB) loadSnapshot(ctx context.Context, path string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer file.Close()
 
@@ -79,7 +86,7 @@ func (db *DB) LoadSnapshot(ctx context.Context, path string) error {
 	decoder := json.NewDecoder(file)
 	decoder.UseNumber()
 	if err := decoder.Decode(&snapshot); err != nil {
-		return err
+		return 0, err
 	}
 
 	db.mu.Lock()
@@ -93,15 +100,18 @@ func (db *DB) LoadSnapshot(ctx context.Context, path string) error {
 	for model, records := range snapshot.Models {
 		table, ok := next[model]
 		if !ok {
-			return fmt.Errorf("snapshot contains unknown model %q", model)
+			return 0, fmt.Errorf("snapshot contains unknown model %q", model)
 		}
 		for _, record := range records {
 			if _, err := table.insert(record); err != nil {
-				return err
+				return 0, err
 			}
 		}
 	}
 
 	db.tables = next
-	return nil
+	if snapshot.Sequence > db.sequence {
+		db.sequence = snapshot.Sequence
+	}
+	return snapshot.Sequence, nil
 }
