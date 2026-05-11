@@ -183,30 +183,10 @@ func encodeValue(value any) string {
 	switch typed := value.(type) {
 	case string:
 		return "s:" + typed
-	case int:
-		return "i:" + strconv.FormatInt(int64(typed), 10)
-	case int8:
-		return "i:" + strconv.FormatInt(int64(typed), 10)
-	case int16:
-		return "i:" + strconv.FormatInt(int64(typed), 10)
-	case int32:
-		return "i:" + strconv.FormatInt(int64(typed), 10)
 	case int64:
 		return "i:" + strconv.FormatInt(typed, 10)
-	case uint:
-		return "u:" + strconv.FormatUint(uint64(typed), 10)
-	case uint8:
-		return "u:" + strconv.FormatUint(uint64(typed), 10)
-	case uint16:
-		return "u:" + strconv.FormatUint(uint64(typed), 10)
-	case uint32:
-		return "u:" + strconv.FormatUint(uint64(typed), 10)
-	case uint64:
-		return "u:" + strconv.FormatUint(typed, 10)
 	case bool:
 		return "b:" + strconv.FormatBool(typed)
-	case float32:
-		return "f:" + strconv.FormatFloat(float64(typed), 'g', -1, 32)
 	case float64:
 		return "f:" + strconv.FormatFloat(typed, 'g', -1, 64)
 	case time.Time:

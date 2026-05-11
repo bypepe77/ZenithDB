@@ -84,7 +84,7 @@ func (idx *secondaryIndex) remove(record Record, primaryKey string) error {
 	return nil
 }
 
-func (idx *secondaryIndex) lookup(values map[string]any) ([]string, error) {
+func (idx *secondaryIndex) lookup(values map[string]any, limit int) ([]string, error) {
 	key, err := keyFromValues(values, idx.definition.Fields)
 	if err != nil {
 		return nil, err
@@ -101,6 +101,16 @@ func (idx *secondaryIndex) lookup(values map[string]any) ([]string, error) {
 	bucket, ok := idx.multi[key]
 	if !ok {
 		return nil, nil
+	}
+	if limit > 0 {
+		result := make([]string, 0, min(limit, len(bucket)))
+		for primaryKey := range bucket {
+			result = append(result, primaryKey)
+			if len(result) >= limit {
+				break
+			}
+		}
+		return result, nil
 	}
 	return sortedIDs(bucket), nil
 }

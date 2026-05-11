@@ -181,6 +181,9 @@ func (t *table) findMany(query Query) ([]Record, error) {
 		ids = make([]string, 0, len(t.rows))
 		for id := range t.rows {
 			ids = append(ids, id)
+			if query.Limit > 0 && len(ids) >= query.Limit {
+				break
+			}
 		}
 	}
 
@@ -211,7 +214,7 @@ func (t *table) idsFromIndex(query Query) ([]string, bool, error) {
 		if !ok {
 			return nil, false, fmt.Errorf("model %q does not define index %q", t.model.Name, query.Index)
 		}
-		ids, err := index.lookup(query.Where)
+		ids, err := index.lookup(query.Where, query.Limit)
 		return ids, true, err
 	}
 
@@ -225,7 +228,7 @@ func (t *table) idsFromIndex(query Query) ([]string, bool, error) {
 
 	for _, index := range t.indexes {
 		if containsAll(query.Where, index.definition.Fields) {
-			ids, err := index.lookup(query.Where)
+			ids, err := index.lookup(query.Where, query.Limit)
 			return ids, true, err
 		}
 	}

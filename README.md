@@ -2,9 +2,17 @@
 
 ZenithDB is an experimental application database engine written in Go.
 
-The goal is a fast in-process
-engine with a Prisma-like developer experience, schema-defined models,
-native relations, in-memory indexes, and durable append-only persistence.
+The goal is a fast in-process engine with a Prisma-like developer experience,
+schema-defined models, native relations, in-memory indexes, durable append-only
+persistence, and schema compilation for low-overhead query paths.
+
+## Repository Layout
+
+```txt
+pkg/zenithdb/              Core public Go engine
+pkg/zenithdb/compiler/     Prisma-like schema parser and Go schema generator
+benchmarks/                Throughput and allocation benchmarks
+```
 
 ## Current MVP
 
@@ -14,11 +22,16 @@ native relations, in-memory indexes, and durable append-only persistence.
 - Prisma-like relation expansion through `Include`.
 - Append-only WAL for durable mutations.
 - Snapshot save/load primitives.
+- Prisma-like schema parser foundation.
+- Go schema generator foundation.
+- Dedicated benchmark package with raw map baseline comparison.
 - Focused tests for indexed reads, relations, WAL replay, and snapshots.
 
 ## Example
 
 ```go
+import zenithdb "github.com/bypepe77/ZenithDB/pkg/zenithdb"
+
 schema := zenithdb.Schema{
 	Models: []zenithdb.Model{
 		{
@@ -50,6 +63,39 @@ _, err = db.Create(ctx, "User", zenithdb.Record{
 	"name":  "Ada",
 })
 ```
+
+## Prisma-like Schema Compiler
+
+```go
+import "github.com/bypepe77/ZenithDB/pkg/zenithdb/compiler"
+
+schema, err := compiler.ParseSchema(`
+model User {
+  id    String @id
+  email String @unique
+  name  String
+  posts Post[]
+}
+
+model Post {
+  id       String @id
+  authorId String
+  title    String
+  author   User @relation(fields: [authorId], references: [id])
+
+  @@index([authorId])
+}
+`)
+```
+
+## Benchmarks
+
+```bash
+go test ./benchmarks -bench=. -benchmem
+```
+
+The benchmark suite includes a raw Go map baseline so the engine always has a
+clear target for the generated hot path.
 
 ## Design Direction
 

@@ -82,7 +82,7 @@ func TestWALReplayRestoresRecords(t *testing.T) {
 	ctx := context.Background()
 	walPath := filepath.Join(t.TempDir(), "zenith.wal")
 
-	db, err := Open(ctx, testSchema(), Options{WALPath: walPath})
+	db, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestWALReplayRestoresRecords(t *testing.T) {
 		t.Fatalf("close db: %v", err)
 	}
 
-	reopened, err := Open(ctx, testSchema(), Options{WALPath: walPath})
+	reopened, err := Open(ctx, TestSchema(), Options{WALPath: walPath})
 	if err != nil {
 		t.Fatalf("reopen db: %v", err)
 	}
@@ -141,7 +141,6 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("expected loaded user")
 	}
-
 	if user["name"] != "Ada" {
 		t.Fatalf("unexpected loaded name: %v", user["name"])
 	}
@@ -150,7 +149,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
 
-	db, err := Open(context.Background(), testSchema(), Options{})
+	db, err := Open(context.Background(), TestSchema(), Options{})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -160,7 +159,8 @@ func openTestDB(t *testing.T) *DB {
 	return db
 }
 
-func testSchema() Schema {
+// TestSchema is shared by package tests and benchmark packages.
+func TestSchema() Schema {
 	return Schema{
 		Models: []Model{
 			{

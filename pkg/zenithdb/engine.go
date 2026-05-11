@@ -222,7 +222,7 @@ func (db *DB) findUniqueLocked(table *table, where map[string]any) (Record, bool
 		if !index.definition.Unique || !containsAll(normalizedWhere, index.definition.Fields) {
 			continue
 		}
-		ids, err := index.lookup(normalizedWhere)
+		ids, err := index.lookup(normalizedWhere, 1)
 		if err != nil {
 			return nil, false, err
 		}

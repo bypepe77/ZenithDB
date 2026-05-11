@@ -28,8 +28,6 @@ type Index struct {
 }
 
 // Relation defines metadata for a Prisma-like relation.
-// The first engine milestone stores the metadata and optimizes lookups through
-// the foreign-key indexes declared on the related models.
 type Relation struct {
 	Name       string
 	Model      string
@@ -50,6 +48,11 @@ type Model struct {
 // Schema is the complete database model definition.
 type Schema struct {
 	Models []Model
+}
+
+// Validate checks model names, fields, indexes, primary keys, and relations.
+func (s Schema) Validate() error {
+	return s.validate()
 }
 
 func (s Schema) validate() error {

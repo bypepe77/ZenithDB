@@ -3,6 +3,7 @@ package zenithdb
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -92,7 +93,7 @@ func (db *DB) LoadSnapshot(ctx context.Context, path string) error {
 	for model, records := range snapshot.Models {
 		table, ok := next[model]
 		if !ok {
-			return os.ErrInvalid
+			return fmt.Errorf("snapshot contains unknown model %q", model)
 		}
 		for _, record := range records {
 			if _, err := table.insert(record); err != nil {
