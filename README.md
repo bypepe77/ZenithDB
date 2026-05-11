@@ -132,19 +132,58 @@ execution plan.
 ZenithDB is split into a few focused layers:
 
 ```txt
-Prisma-like schema
-        |
-        v
-Schema compiler  --->  Generated Go client
-        |                     |
-        v                     v
- zenithdb.Schema       Model operations
-        |                     |
-        v                     v
- In-memory engine <--- Binary wire protocol
-        |
-        v
- WAL + checkpoints
+                              Developer workflow
+                              ------------------
+
+  zenith.schema
+       |
+       |  validate / generate
+       v
+  Schema compiler  --------------------------------+
+       |                                           |
+       v                                           v
+  zenithdb.Schema                          Generated Go client
+       |                                           |
+       |                                           | typed model calls
+       |                                           | FindUnique / FindMany
+       |                                           | Include / Upsert / Batch
+       |                                           v
+       |                              +-----------------------------+
+       |                              | Embedded mode               |
+       |                              | app process -> engine       |
+       |                              +-----------------------------+
+       |                                           |
+       |                                           | or zenith://
+       |                                           v
+       |                              +-----------------------------+
+       |                              | Remote mode                 |
+       |                              | binary TCP data plane       |
+       |                              | pooled client connections   |
+       |                              +-----------------------------+
+       |                                           |
+       v                                           v
+  +---------------------------------------------------------------+
+  | ZenithDB engine                                               |
+  |                                                               |
+  |  model tables in memory                                       |
+  |  primary indexes / unique indexes / secondary indexes         |
+  |  schema validation / filters / ordering / pagination          |
+  |  relation Include expansion / atomic mutation publication     |
+  +---------------------------------------------------------------+
+       |
+       | writes append before publication when persistence is enabled
+       v
+  +---------------------------------------------------------------+
+  | Disk durability                                               |
+  |                                                               |
+  |  .zenithdb/manifest.json                                      |
+  |  .zenithdb/wal/*.wal                                          |
+  |  .zenithdb/snapshots/*.snapshot.json                          |
+  |  .zenithdb/locks/db.lock                                      |
+  +---------------------------------------------------------------+
+
+  HTTP control plane: health, schema metadata, checkpoint operations.
+  HTTP is not used for hot data operations.
 ```
 
 - **Schema compiler**: parses the Prisma-like schema and generates typed Go
@@ -163,6 +202,52 @@ Schema compiler  --->  Generated Go client
 
 The data plane and the control plane are intentionally separate. Data operations
 use the binary protocol; HTTP is not used for the performance-critical path.
+
+## Developer Questions
+
+**Are the records stored in memory or on disk?**
+
+Both, depending on configuration. The active working set lives in memory inside
+model tables and indexes. If persistence is enabled, mutations are also written
+to disk through the WAL and checkpoint snapshots.
+
+**What happens if I do not configure persistence?**
+
+ZenithDB behaves like an in-memory database. It is useful for tests,
+experiments, and ephemeral workloads, but data is lost when the process exits.
+
+**What enables disk persistence?**
+
+Use `DataDir` for the product-style layout:
+
+```go
+client, err := zenith.Open(ctx, zenithdb.Options{
+	DataDir: ".zenithdb",
+})
+```
+
+For lower-level engine usage, explicit WAL and snapshot paths can also be used.
+`DataDir` is the recommended path because it owns the manifest, WAL directory,
+snapshot directory, and lock file.
+
+**What happens on restart?**
+
+ZenithDB loads the latest checkpoint snapshot, then replays newer WAL entries.
+That rebuilds the in-memory tables and indexes before the database starts
+serving reads.
+
+**Does remote mode store data on the client?**
+
+No. A generated remote client opened with `zenith://` sends operations to the
+server. The server owns the in-memory tables and disk persistence. The client
+keeps connections and schema compatibility metadata, not a full copy of the
+database.
+
+**Why is there HTTP if data uses a binary protocol?**
+
+HTTP is the control plane. It is useful for health checks, schema operations, and
+checkpoint-style administrative endpoints. Data operations use the binary TCP
+wire protocol.
 
 ## Performance Thesis
 
@@ -241,6 +326,10 @@ and relation filters are still roadmap items.
 
 ## Persistence Model
 
+ZenithDB can be purely in-memory, but that is not the durable configuration.
+When `DataDir` is set, data is persisted on disk and recovered automatically on
+open.
+
 ZenithDB is not designed around rewriting one large JSON file on every mutation.
 The durable path is append-first:
 
@@ -258,6 +347,9 @@ The durable path is append-first:
 Writes are appended to the WAL before they are published in memory. Checkpoints
 write snapshots so recovery can load a recent state and replay only newer WAL
 entries.
+
+The memory copy is the serving state. The disk copy is the recovery state. On
+startup, disk state is replayed back into memory and indexes are rebuilt.
 
 JSON remains useful for readable snapshots, portability, import/export, and
 debugging. The performance direction is binary WAL by default, checksums,
