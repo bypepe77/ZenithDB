@@ -423,11 +423,11 @@ fit for cache-first and ephemeral data-structure workloads.
 
 Detailed guides live in [`docs/`](docs/README.md):
 
-- [Schema overview](docs/prisma-schema/overview.md)
-- [Data model](docs/prisma-schema/data-model.md)
-- [Relations](docs/prisma-schema/relations.md)
-- [Queries](docs/prisma-client/queries.md)
-- [Mutations](docs/prisma-client/mutations.md)
+- [Schema overview](docs/zenit-schema/overview.md)
+- [Data model](docs/zenit-schema/data-model.md)
+- [Relations](docs/zenit-schema/relations.md)
+- [Queries](docs/zenit-client/queries.md)
+- [Mutations](docs/zenit-client/mutations.md)
 
 ## Repository Layout
 
