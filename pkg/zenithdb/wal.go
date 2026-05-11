@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,10 +14,20 @@ import (
 	"sync"
 )
 
+const binaryWALRecordMarker byte = 0x1e
+
 const (
 	opCreate = "create"
 	opUpdate = "update"
 	opDelete = "delete"
+)
+
+// WALFormat controls how operations are encoded on disk.
+type WALFormat int
+
+const (
+	WALFormatJSONL WALFormat = iota
+	WALFormatBinary
 )
 
 type operation struct {
@@ -32,6 +43,7 @@ type WAL struct {
 	mu         sync.Mutex
 	file       *os.File
 	syncPolicy SyncPolicy
+	format     WALFormat
 }
 
 // OpenWAL opens or creates a write-ahead log.
@@ -41,6 +53,11 @@ func OpenWAL(path string) (*WAL, error) {
 
 // OpenWALWithSyncPolicy opens or creates a write-ahead log with the given sync policy.
 func OpenWALWithSyncPolicy(path string, syncPolicy SyncPolicy) (*WAL, error) {
+	return OpenWALWithOptions(path, syncPolicy, WALFormatJSONL)
+}
+
+// OpenWALWithOptions opens or creates a write-ahead log.
+func OpenWALWithOptions(path string, syncPolicy SyncPolicy, format WALFormat) (*WAL, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -50,7 +67,7 @@ func OpenWALWithSyncPolicy(path string, syncPolicy SyncPolicy) (*WAL, error) {
 		return nil, err
 	}
 
-	return &WAL{file: file, syncPolicy: syncPolicy}, nil
+	return &WAL{file: file, syncPolicy: syncPolicy, format: format}, nil
 }
 
 // Append persists one operation and fsyncs it before returning.
@@ -62,18 +79,43 @@ func (wal *WAL) Append(ctx context.Context, operation operation) error {
 	wal.mu.Lock()
 	defer wal.mu.Unlock()
 
-	payload, err := json.Marshal(operation)
-	if err != nil {
-		return err
+	var err error
+	if wal.format == WALFormatBinary {
+		err = wal.appendBinary(operation)
+	} else {
+		err = wal.appendJSONL(operation)
 	}
-	payload = append(payload, '\n')
-	if _, err := wal.file.Write(payload); err != nil {
+	if err != nil {
 		return err
 	}
 	if wal.syncPolicy == SyncNever {
 		return nil
 	}
 	return wal.file.Sync()
+}
+
+func (wal *WAL) appendJSONL(operation operation) error {
+	payload, err := json.Marshal(operation)
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	_, err = wal.file.Write(payload)
+	return err
+}
+
+func (wal *WAL) appendBinary(operation operation) error {
+	payload, err := json.Marshal(operation)
+	if err != nil {
+		return err
+	}
+	header := []byte{binaryWALRecordMarker, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(header[1:], uint32(len(payload)))
+	if _, err := wal.file.Write(header); err != nil {
+		return err
+	}
+	_, err = wal.file.Write(payload)
+	return err
 }
 
 // Replay applies every operation in log order.
@@ -88,6 +130,11 @@ func (wal *WAL) ReplayFrom(ctx context.Context, afterSequence uint64, apply func
 
 	if _, err := wal.file.Seek(0, io.SeekStart); err != nil {
 		return err
+	}
+	if binary, err := wal.isBinary(); err != nil {
+		return err
+	} else if binary {
+		return wal.replayBinary(ctx, afterSequence, apply)
 	}
 
 	scanner := bufio.NewScanner(wal.file)
@@ -122,6 +169,59 @@ func (wal *WAL) ReplayFrom(ctx context.Context, afterSequence uint64, apply func
 		return err
 	}
 
+	_, err := wal.file.Seek(0, io.SeekEnd)
+	return err
+}
+
+func (wal *WAL) isBinary() (bool, error) {
+	var marker [1]byte
+	n, err := wal.file.Read(marker[:])
+	if errors.Is(err, io.EOF) || n == 0 {
+		_, seekErr := wal.file.Seek(0, io.SeekStart)
+		return false, seekErr
+	}
+	if err != nil {
+		return false, err
+	}
+	_, err = wal.file.Seek(0, io.SeekStart)
+	return marker[0] == binaryWALRecordMarker, err
+}
+
+func (wal *WAL) replayBinary(ctx context.Context, afterSequence uint64, apply func(operation) error) error {
+	line := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(wal.file, header); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
+			return err
+		}
+		line++
+		if header[0] != binaryWALRecordMarker {
+			return fmt.Errorf("binary wal record %d has invalid marker", line)
+		}
+		size := binary.BigEndian.Uint32(header[1:])
+		payload := make([]byte, size)
+		if _, err := io.ReadFull(wal.file, payload); err != nil {
+			return err
+		}
+		var operation operation
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.UseNumber()
+		if err := decoder.Decode(&operation); err != nil {
+			return fmt.Errorf("binary wal record %d: %w", line, err)
+		}
+		if operation.Sequence != 0 && operation.Sequence <= afterSequence {
+			continue
+		}
+		if err := apply(operation); err != nil {
+			return fmt.Errorf("binary wal record %d: %w", line, err)
+		}
+	}
 	_, err := wal.file.Seek(0, io.SeekEnd)
 	return err
 }

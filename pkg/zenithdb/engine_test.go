@@ -180,6 +180,40 @@ func TestDataDirRecoveryReplaysWAL(t *testing.T) {
 	}
 }
 
+func TestDataDirRecoveryReplaysBinaryWAL(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), ".zenithdb")
+
+	db, err := Open(ctx, TestSchema(), Options{DataDir: dataDir, WALFormat: WALFormatBinary})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	_, err = db.Create(ctx, "User", Record{"id": "u1", "email": "ada@example.com", "name": "Ada"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(ctx, TestSchema(), Options{DataDir: dataDir, WALFormat: WALFormatBinary})
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+
+	user, ok, err := reopened.FindUnique(ctx, "User", map[string]any{"id": "u1"}, nil)
+	if err != nil {
+		t.Fatalf("find recovered user: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected recovered user")
+	}
+	if user["name"] != "Ada" {
+		t.Fatalf("unexpected recovered name: %v", user["name"])
+	}
+}
+
 func TestOpenURLUsesLocalDataDir(t *testing.T) {
 	ctx := context.Background()
 	dataDir := filepath.Join(t.TempDir(), ".zenithdb")

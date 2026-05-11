@@ -27,7 +27,9 @@ benchmarks/                Throughput and allocation benchmarks
 - Checkpoint snapshots for faster recovery.
 - Prisma-like schema parser foundation.
 - Go schema generator with Prisma-like `FindUnique` and `FindMany` argument types.
-- Developer CLI with `init`, `validate`, `generate`, `bench`, and `repl`.
+- Binary TCP wire protocol for remote data operations.
+- HTTP control plane for health, schema metadata, and checkpoint operations.
+- Developer CLI with `init`, `validate`, `generate`, `bench`, `repl`, `serve`, and remote schema commands.
 - Dedicated benchmark package with raw map baseline comparison.
 - Focused tests for indexed reads, relations, WAL replay, and snapshots.
 
@@ -89,6 +91,28 @@ create User id=u1 email=ada@example.com name=Ada
 find User id=u1
 list User
 exit
+```
+
+Run ZenithDB as a remote server:
+
+```bash
+go run ./cmd/zenith serve -schema zenith.schema -addr 0.0.0.0:8787 -wire-addr 0.0.0.0:8788 -data .zenithdb -token dev-token
+```
+
+The HTTP address is the control plane. The `zenith://` URL should point to the
+binary wire address, which is used for data operations and schema metadata.
+
+From another machine, pull the server schema and generate a typed client from it:
+
+```bash
+go run ./cmd/zenith schema pull -url "zenith://db.example.com:8788?token=dev-token" -out zenith.schema
+go run ./cmd/zenith generate -url "zenith://db.example.com:8788?token=dev-token" -out zenith/generated.go
+```
+
+Validate that a local schema matches the remote server:
+
+```bash
+go run ./cmd/zenith schema push -url "zenith://db.example.com:8788?token=dev-token" -schema zenith.schema
 ```
 
 ## Example

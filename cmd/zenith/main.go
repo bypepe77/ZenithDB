@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,9 +17,19 @@ import (
 
 	"github.com/bypepe77/ZenithDB/pkg/zenithdb"
 	"github.com/bypepe77/ZenithDB/pkg/zenithdb/compiler"
+	"github.com/bypepe77/ZenithDB/pkg/zenithdb/remote"
+	"github.com/bypepe77/ZenithDB/pkg/zenithdb/server"
+	"github.com/bypepe77/ZenithDB/pkg/zenithdb/wire"
 )
 
 const defaultSchemaPath = "zenith.schema"
+
+type replEngine interface {
+	Create(context.Context, string, zenithdb.Record) (zenithdb.MutationResult, error)
+	FindUnique(context.Context, string, map[string]any, map[string]zenithdb.Include) (zenithdb.Record, bool, error)
+	FindMany(context.Context, string, zenithdb.Query) ([]zenithdb.Record, error)
+	Close() error
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -43,6 +55,10 @@ func run(args []string) error {
 		return runBench(args[1:])
 	case "repl":
 		return runREPL(args[1:])
+	case "serve":
+		return runServe(args[1:])
+	case "schema":
+		return runSchema(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -96,13 +112,14 @@ func runGenerate(args []string) error {
 	flags := flag.NewFlagSet("generate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	schemaPath := flags.String("schema", defaultSchemaPath, "schema file path")
+	connectionURL := flags.String("url", "", "remote connection URL to pull schema from")
 	outputPath := flags.String("out", filepath.Join("zenith", "generated.go"), "generated Go file path")
 	packageName := flags.String("package", "zenith", "generated Go package name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 
-	schema, err := loadSchema(*schemaPath)
+	schema, err := loadSchemaForGenerate(*schemaPath, *connectionURL)
 	if err != nil {
 		return err
 	}
@@ -203,8 +220,7 @@ func runREPL(args []string) error {
 	if err != nil {
 		return err
 	}
-	options := zenithdb.Options{ConnectionURL: *connectionURL, DataDir: *dataDir, WALPath: *walPath}
-	db, err := zenithdb.Open(context.Background(), schema, options)
+	db, err := openREPLEngine(context.Background(), schema, *connectionURL, *dataDir, *walPath)
 	if err != nil {
 		return err
 	}
@@ -232,7 +248,133 @@ func runREPL(args []string) error {
 	return scanner.Err()
 }
 
-func runREPLCommand(ctx context.Context, db *zenithdb.DB, line string) error {
+func runServe(args []string) error {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	schemaPath := flags.String("schema", defaultSchemaPath, "schema file path")
+	addr := flags.String("addr", "127.0.0.1:8787", "listen address")
+	wireAddr := flags.String("wire-addr", "127.0.0.1:8788", "binary wire protocol listen address")
+	connectionURL := flags.String("url", "", "local connection URL")
+	dataDir := flags.String("data", ".zenithdb", "ZenithDB data directory")
+	token := flags.String("token", "", "optional bearer token")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	schemaSource, err := os.ReadFile(*schemaPath)
+	if err != nil {
+		return err
+	}
+	schema, err := compiler.ParseSchema(string(schemaSource))
+	if err != nil {
+		return err
+	}
+	options := zenithdb.Options{ConnectionURL: *connectionURL, DataDir: *dataDir}
+	db, err := zenithdb.Open(context.Background(), schema, options)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	wireListener, err := net.Listen("tcp", *wireAddr)
+	if err != nil {
+		return err
+	}
+	defer wireListener.Close()
+
+	wireServer := wire.NewServer(db, wire.Options{Token: *token, SchemaSource: string(schemaSource)})
+	go func() {
+		_ = wireServer.Serve(wireListener)
+	}()
+
+	fmt.Printf("zenith control plane listening on %s\n", *addr)
+	fmt.Printf("zenith binary wire listening on %s\n", *wireAddr)
+	return http.ListenAndServe(*addr, server.New(db, server.Options{Token: *token, SchemaSource: string(schemaSource)}))
+}
+
+func runSchema(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("expected schema subcommand: pull or push")
+	}
+	switch args[0] {
+	case "pull":
+		return runSchemaPull(args[1:])
+	case "push":
+		return runSchemaPush(args[1:])
+	default:
+		return fmt.Errorf("unknown schema subcommand %q", args[0])
+	}
+}
+
+func runSchemaPull(args []string) error {
+	flags := flag.NewFlagSet("schema pull", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	connectionURL := flags.String("url", "", "remote connection URL")
+	outputPath := flags.String("out", defaultSchemaPath, "schema output path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *connectionURL == "" {
+		return fmt.Errorf("-url is required")
+	}
+	client, err := remote.Open(*connectionURL)
+	if err != nil {
+		return err
+	}
+	schema, err := client.PullSchema(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(*outputPath, []byte(schema), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("pulled schema to %s\n", *outputPath)
+	return nil
+}
+
+func runSchemaPush(args []string) error {
+	flags := flag.NewFlagSet("schema push", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	connectionURL := flags.String("url", "", "remote connection URL")
+	schemaPath := flags.String("schema", defaultSchemaPath, "schema file path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *connectionURL == "" {
+		return fmt.Errorf("-url is required")
+	}
+	raw, err := os.ReadFile(*schemaPath)
+	if err != nil {
+		return err
+	}
+	if _, err := compiler.ParseSchema(string(raw)); err != nil {
+		return err
+	}
+	client, err := remote.Open(*connectionURL)
+	if err != nil {
+		return err
+	}
+	if err := client.ValidateSchema(context.Background(), string(raw)); err != nil {
+		return err
+	}
+	fmt.Println("remote schema is compatible")
+	return nil
+}
+
+func openREPLEngine(ctx context.Context, schema zenithdb.Schema, connectionURL, dataDir, walPath string) (replEngine, error) {
+	if connectionURL != "" {
+		options, err := zenithdb.ParseConnectionURL(connectionURL)
+		if err != nil {
+			return nil, err
+		}
+		if options.WireURL != "" {
+			return remote.OpenContext(ctx, connectionURL)
+		}
+	}
+	return zenithdb.Open(ctx, schema, zenithdb.Options{ConnectionURL: connectionURL, DataDir: dataDir, WALPath: walPath})
+}
+
+func runREPLCommand(ctx context.Context, db replEngine, line string) error {
 	parts := strings.Fields(line)
 	if len(parts) < 2 {
 		return fmt.Errorf("expected command and model")
@@ -283,6 +425,21 @@ func loadSchema(path string) (zenithdb.Schema, error) {
 		return zenithdb.Schema{}, err
 	}
 	return compiler.ParseSchema(string(raw))
+}
+
+func loadSchemaForGenerate(path string, connectionURL string) (zenithdb.Schema, error) {
+	if connectionURL == "" {
+		return loadSchema(path)
+	}
+	client, err := remote.Open(connectionURL)
+	if err != nil {
+		return zenithdb.Schema{}, err
+	}
+	source, err := client.PullSchema(context.Background())
+	if err != nil {
+		return zenithdb.Schema{}, err
+	}
+	return compiler.ParseSchema(source)
 }
 
 func printSchemaSummary(schema zenithdb.Schema) {
@@ -374,7 +531,7 @@ func cleanPath(path string) string {
 }
 
 func printUsage() {
-	fmt.Println(`ZenithDB CLI
+	fmt.Print(`ZenithDB CLI
 
 Usage:
   zenith init [-schema zenith.schema] [-force]
@@ -382,6 +539,9 @@ Usage:
   zenith generate [-schema zenith.schema] [-out zenith/generated.go] [-package zenith]
   zenith bench [-schema zenith.schema] [-model User] [-records 100000] [-queries 1000000]
   zenith repl [-schema zenith.schema] [-data .zenithdb] [-wal data/zenith.wal]
+  zenith serve [-schema zenith.schema] [-addr 127.0.0.1:8787] [-wire-addr 127.0.0.1:8788] [-data .zenithdb]
+  zenith schema pull -url zenith://host:8788 [-out zenith.schema]
+  zenith schema push -url zenith://host:8788 [-schema zenith.schema]
 `)
 }
 

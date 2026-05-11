@@ -23,6 +23,7 @@ lock-light read paths.
 Current benchmark groups:
 
 - Generic engine reads through `FindUnique` and `FindMany`.
+- Binary wire remote reads through a persistent TCP connection.
 - Generated-client shaped reads through shortcut and Prisma-like methods.
 - DataDir recovery from WAL and checkpoint snapshots.
 - Raw Go map lookup baseline.

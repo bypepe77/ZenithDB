@@ -22,8 +22,17 @@ func resolveOptions(options Options) (Options, error) {
 	if options.WALPath == "" {
 		options.WALPath = parsed.WALPath
 	}
+	if options.WireURL == "" {
+		options.WireURL = parsed.WireURL
+	}
+	if options.AuthToken == "" {
+		options.AuthToken = parsed.AuthToken
+	}
 	if options.SyncPolicy == SyncAlways {
 		options.SyncPolicy = parsed.SyncPolicy
+	}
+	if options.WALFormat == WALFormatJSONL {
+		options.WALFormat = parsed.WALFormat
 	}
 	return options, nil
 }
@@ -67,6 +76,13 @@ func ParseConnectionURL(raw string) (Options, error) {
 		}
 		options.SyncPolicy = syncPolicy
 	}
+	if value := query.Get("walFormat"); value != "" {
+		format, err := parseWALFormat(value)
+		if err != nil {
+			return Options{}, err
+		}
+		options.WALFormat = format
+	}
 
 	return options, nil
 }
@@ -81,7 +97,20 @@ func applyZenithURL(parsed *url.URL, options *Options) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("unsupported zenith connection target %q", parsed.Host)
+		options.WireURL = parsed.Host
+		options.AuthToken = parsed.Query().Get("token")
+		return nil
+	}
+}
+
+func parseWALFormat(value string) (WALFormat, error) {
+	switch strings.ToLower(value) {
+	case "", "json", "jsonl":
+		return WALFormatJSONL, nil
+	case "binary", "bin":
+		return WALFormatBinary, nil
+	default:
+		return WALFormatJSONL, fmt.Errorf("unsupported wal format %q", value)
 	}
 }
 

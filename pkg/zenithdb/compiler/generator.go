@@ -28,9 +28,9 @@ func GenerateGoClient(packageName string, schema zenithdb.Schema) ([]byte, error
 	var buffer bytes.Buffer
 	fmt.Fprintf(&buffer, "package %s\n\n", packageName)
 	if schemaUsesTime(schema) {
-		fmt.Fprintf(&buffer, "import (\n%q\n%q\nzenithdb %q\n)\n\n", "context", "time", "github.com/bypepe77/ZenithDB/pkg/zenithdb")
+		fmt.Fprintf(&buffer, "import (\n%q\n%q\nzenithdb %q\nremote %q\n)\n\n", "context", "time", "github.com/bypepe77/ZenithDB/pkg/zenithdb", "github.com/bypepe77/ZenithDB/pkg/zenithdb/remote")
 	} else {
-		fmt.Fprintf(&buffer, "import (\n%q\nzenithdb %q\n)\n\n", "context", "github.com/bypepe77/ZenithDB/pkg/zenithdb")
+		fmt.Fprintf(&buffer, "import (\n%q\nzenithdb %q\nremote %q\n)\n\n", "context", "github.com/bypepe77/ZenithDB/pkg/zenithdb", "github.com/bypepe77/ZenithDB/pkg/zenithdb/remote")
 	}
 	writeSchemaVariable(&buffer, "Schema", schema)
 	writeClient(&buffer, schema)
@@ -63,7 +63,8 @@ func writeSchemaVariable(buffer *bytes.Buffer, variableName string, schema zenit
 }
 
 func writeClient(buffer *bytes.Buffer, schema zenithdb.Schema) {
-	fmt.Fprintf(buffer, "type Client struct {\ndb *zenithdb.DB\n")
+	fmt.Fprintf(buffer, "type engine interface {\nCreate(context.Context, string, zenithdb.Record) (zenithdb.MutationResult, error)\nUpdate(context.Context, string, map[string]any, zenithdb.Record) (zenithdb.Record, error)\nDelete(context.Context, string, map[string]any) (zenithdb.Record, error)\nFindUnique(context.Context, string, map[string]any, map[string]zenithdb.Include) (zenithdb.Record, bool, error)\nFindMany(context.Context, string, zenithdb.Query) ([]zenithdb.Record, error)\nClose() error\n}\n\n")
+	fmt.Fprintf(buffer, "type Client struct {\ndb engine\nremote bool\n")
 	for _, model := range schema.Models {
 		fmt.Fprintf(buffer, "%s *%sStore\n", lowerIdentifier(model.Name), lowerIdentifier(model.Name))
 		fmt.Fprintf(buffer, "%s %sClient\n", model.Name, model.Name)
@@ -72,19 +73,22 @@ func writeClient(buffer *bytes.Buffer, schema zenithdb.Schema) {
 
 	fmt.Fprintf(buffer, "func Open(ctx context.Context, options zenithdb.Options) (*Client, error) {\n")
 	fmt.Fprintf(buffer, "db, err := zenithdb.Open(ctx, Schema, options)\nif err != nil {\nreturn nil, err\n}\n")
-	fmt.Fprintf(buffer, "client := &Client{db: db}\n")
+	fmt.Fprintf(buffer, "return newClientFromEngine(ctx, db, true, false)\n}\n\n")
+	fmt.Fprintf(buffer, "func OpenURL(ctx context.Context, connectionURL string) (*Client, error) {\noptions, err := zenithdb.ParseConnectionURL(connectionURL)\nif err != nil {\nreturn nil, err\n}\nif options.WireURL != \"\" {\ndb, err := remote.Open(connectionURL)\nif err != nil {\nreturn nil, err\n}\nreturn newClientFromEngine(ctx, db, false, true)\n}\nreturn Open(ctx, zenithdb.Options{ConnectionURL: connectionURL})\n}\n\n")
+	fmt.Fprintf(buffer, "func (c *Client) Close() error {\nreturn c.db.Close()\n}\n\n")
+	fmt.Fprintf(buffer, "func newClientFromEngine(ctx context.Context, db engine, preload bool, remote bool) (*Client, error) {\nclient := &Client{db: db, remote: remote}\n")
 	for _, model := range schema.Models {
 		fmt.Fprintf(buffer, "client.%s = new%sStore()\n", lowerIdentifier(model.Name), model.Name)
 	}
+	fmt.Fprintf(buffer, "if preload {\n")
 	for _, model := range schema.Models {
 		fmt.Fprintf(buffer, "if err := client.load%s(ctx); err != nil {\n_ = db.Close()\nreturn nil, err\n}\n", model.Name)
 	}
+	fmt.Fprintf(buffer, "}\n")
 	for _, model := range schema.Models {
 		fmt.Fprintf(buffer, "client.%s = %sClient{client: client}\n", model.Name, model.Name)
 	}
 	fmt.Fprintf(buffer, "return client, nil\n}\n\n")
-	fmt.Fprintf(buffer, "func OpenURL(ctx context.Context, connectionURL string) (*Client, error) {\nreturn Open(ctx, zenithdb.Options{ConnectionURL: connectionURL})\n}\n\n")
-	fmt.Fprintf(buffer, "func (c *Client) Close() error {\nreturn c.db.Close()\n}\n\n")
 	for _, model := range schema.Models {
 		fmt.Fprintf(buffer, "func (c *Client) load%s(ctx context.Context) error {\nrecords, err := c.db.FindMany(ctx, %q, zenithdb.Query{})\nif err != nil {\nreturn err\n}\nfor _, record := range records {\nc.%s.put(recordTo%s(record))\n}\nreturn nil\n}\n\n", model.Name, model.Name, lowerIdentifier(model.Name), model.Name)
 	}
@@ -113,11 +117,29 @@ func writeModelTypes(buffer *bytes.Buffer, schema zenithdb.Schema, model zenithd
 	}
 	fmt.Fprintf(buffer, "}\n\n")
 
+	fmt.Fprintf(buffer, "type %sUpdateInput struct {\n", model.Name)
+	for _, field := range model.Fields {
+		if isPrimaryField(model, field.Name) {
+			continue
+		}
+		fmt.Fprintf(buffer, "%s *%s\n", exportedIdentifier(field.Name), goType(field.Kind))
+	}
+	fmt.Fprintf(buffer, "}\n\n")
+
 	fmt.Fprintf(buffer, "func (input %sCreateInput) record() zenithdb.Record {\nreturn zenithdb.Record{\n", model.Name)
 	for _, field := range model.Fields {
 		fmt.Fprintf(buffer, "%q: input.%s,\n", field.Name, exportedIdentifier(field.Name))
 	}
 	fmt.Fprintf(buffer, "}\n}\n\n")
+
+	fmt.Fprintf(buffer, "func (input %sUpdateInput) record() zenithdb.Record {\nrecord := zenithdb.Record{}\n", model.Name)
+	for _, field := range model.Fields {
+		if isPrimaryField(model, field.Name) {
+			continue
+		}
+		fmt.Fprintf(buffer, "if input.%s != nil {\nrecord[%q] = *input.%s\n}\n", exportedIdentifier(field.Name), field.Name, exportedIdentifier(field.Name))
+	}
+	fmt.Fprintf(buffer, "return record\n}\n\n")
 
 	writeWhereTypes(buffer, model)
 	writeIncludeType(buffer, model)
@@ -213,6 +235,25 @@ func writeModelStore(buffer *bytes.Buffer, model zenithdb.Model) {
 		}
 	}
 	fmt.Fprintf(buffer, "}\n\n")
+
+	fmt.Fprintf(buffer, "func (s *%s) remove(record %s) {\ndelete(s.by%s, record.%s)\n", store, model.Name, exportedIdentifier(pk.Name), exportedIdentifier(pk.Name))
+	for _, index := range model.Indexes {
+		if len(index.Fields) != 1 {
+			continue
+		}
+		field, ok := findField(model, index.Fields[0])
+		if !ok {
+			continue
+		}
+		if index.Unique {
+			fmt.Fprintf(buffer, "delete(s.by%s, record.%s)\n", exportedIdentifier(field.Name), exportedIdentifier(field.Name))
+		} else {
+			fmt.Fprintf(buffer, "ids := s.by%s[record.%s]\nfor i, id := range ids {\nif id == record.%s {\nids = append(ids[:i], ids[i+1:]...)\nbreak\n}\n}\nif len(ids) == 0 {\ndelete(s.by%s, record.%s)\n} else {\ns.by%s[record.%s] = ids\n}\n", exportedIdentifier(field.Name), exportedIdentifier(field.Name), exportedIdentifier(pk.Name), exportedIdentifier(field.Name), exportedIdentifier(field.Name), exportedIdentifier(field.Name), exportedIdentifier(field.Name))
+		}
+	}
+	fmt.Fprintf(buffer, "}\n\n")
+
+	fmt.Fprintf(buffer, "func (s *%s) replace(previous %s, next %s) {\ns.remove(previous)\ns.put(next)\n}\n\n", store, model.Name, model.Name)
 
 	writeStoreFindByField(buffer, model, pk, true)
 	for _, index := range model.Indexes {
@@ -340,16 +381,20 @@ func writeIncludeType(buffer *bytes.Buffer, model zenithdb.Model) {
 
 	fmt.Fprintf(buffer, "type %sFindUniqueArgs struct {\nWhere %sWhereUniqueInput\nInclude *%sInclude\n}\n\n", model.Name, model.Name, model.Name)
 	fmt.Fprintf(buffer, "type %sFindManyArgs struct {\nWhere %sWhereInput\nInclude *%sInclude\nTake int\n}\n\n", model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "type %sUpdateArgs struct {\nWhere %sWhereUniqueInput\nData %sUpdateInput\nInclude *%sInclude\n}\n\n", model.Name, model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "type %sDeleteArgs struct {\nWhere %sWhereUniqueInput\nInclude *%sInclude\n}\n\n", model.Name, model.Name, model.Name)
 }
 
 func writePrismaLikeMethods(buffer *bytes.Buffer, model zenithdb.Model) {
 	fmt.Fprintf(buffer, "func (c %sClient) FindUnique(ctx context.Context, args %sFindUniqueArgs) (%s, bool, error) {\n", model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "if c.client.remote {\nwhere := args.Where.where()\nif where == nil {\nreturn %s{}, false, nil\n}\nrecord, ok, err := c.client.db.FindUnique(ctx, %q, where, args.Include.include())\nif err != nil || !ok {\nreturn %s{}, ok, err\n}\nreturn recordTo%s(record), true, nil\n}\n", model.Name, model.Name, model.Name, model.Name)
 	for _, field := range uniqueLookupFields(model) {
 		fmt.Fprintf(buffer, "if args.Where.%s != %s {\nrecord, ok := c.client.%s.findBy%s(args.Where.%s)\nif !ok {\nreturn %s{}, false, nil\n}\nc.client.include%s(&record, args.Include)\nreturn record, true, nil\n}\n", exportedIdentifier(field.Name), zeroValue(field.Kind), lowerIdentifier(model.Name), exportedIdentifier(field.Name), exportedIdentifier(field.Name), model.Name, model.Name)
 	}
 	fmt.Fprintf(buffer, "return %s{}, false, nil\n}\n\n", model.Name)
 
 	fmt.Fprintf(buffer, "func (c %sClient) FindMany(ctx context.Context, args %sFindManyArgs) ([]%s, error) {\n", model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "if c.client.remote {\nrecords, err := c.client.db.FindMany(ctx, %q, zenithdb.Query{Where: args.Where.where(), Index: args.Where.index(), Include: args.Include.include(), Limit: args.Take})\nif err != nil {\nreturn nil, err\n}\nresult := make([]%s, 0, len(records))\nfor _, record := range records {\nresult = append(result, recordTo%s(record))\n}\nreturn result, nil\n}\n", model.Name, model.Name, model.Name)
 	pk, hasPK := primaryField(model)
 	if hasPK {
 		fmt.Fprintf(buffer, "if args.Where.%s != nil {\nrecord, ok := c.client.%s.findBy%s(*args.Where.%s)\nif !ok {\nreturn nil, nil\n}\nc.client.include%s(&record, args.Include)\nreturn []%s{record}, nil\n}\n", exportedIdentifier(pk.Name), lowerIdentifier(model.Name), exportedIdentifier(pk.Name), exportedIdentifier(pk.Name), model.Name, model.Name)
@@ -370,6 +415,14 @@ func writePrismaLikeMethods(buffer *bytes.Buffer, model zenithdb.Model) {
 	}
 	fmt.Fprintf(buffer, "records, err := c.client.db.FindMany(ctx, %q, zenithdb.Query{Where: args.Where.where(), Index: args.Where.index(), Include: args.Include.include(), Limit: args.Take})\n", model.Name)
 	fmt.Fprintf(buffer, "if err != nil {\nreturn nil, err\n}\nresult := make([]%s, 0, len(records))\nfor _, record := range records {\nconverted := recordTo%s(record)\nc.client.include%s(&converted, args.Include)\nresult = append(result, converted)\n}\nreturn result, nil\n}\n\n", model.Name, model.Name, model.Name)
+
+	fmt.Fprintf(buffer, "func (c %sClient) Update(ctx context.Context, args %sUpdateArgs) (%s, bool, error) {\n", model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "if c.client.remote {\nupdatedRecord, err := c.client.db.Update(ctx, %q, args.Where.where(), args.Data.record())\nif err != nil {\nreturn %s{}, false, err\n}\nif args.Include != nil {\nrecord, ok, err := c.client.db.FindUnique(ctx, %q, args.Where.where(), args.Include.include())\nif err != nil || !ok {\nreturn %s{}, ok, err\n}\nreturn recordTo%s(record), true, nil\n}\nreturn recordTo%s(updatedRecord), true, nil\n}\n", model.Name, model.Name, model.Name, model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "previous, ok, err := c.FindUnique(ctx, %sFindUniqueArgs{Where: args.Where})\nif err != nil || !ok {\nreturn %s{}, ok, err\n}\nupdatedRecord, err := c.client.db.Update(ctx, %q, args.Where.where(), args.Data.record())\nif err != nil {\nreturn %s{}, false, err\n}\nupdated := recordTo%s(updatedRecord)\nc.client.%s.replace(previous, updated)\nc.client.include%s(&updated, args.Include)\nreturn updated, true, nil\n}\n\n", model.Name, model.Name, model.Name, model.Name, model.Name, lowerIdentifier(model.Name), model.Name)
+
+	fmt.Fprintf(buffer, "func (c %sClient) Delete(ctx context.Context, args %sDeleteArgs) (%s, bool, error) {\n", model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "if c.client.remote {\nprevious, ok, err := c.FindUnique(ctx, %sFindUniqueArgs{Where: args.Where, Include: args.Include})\nif err != nil || !ok {\nreturn %s{}, ok, err\n}\n_, err = c.client.db.Delete(ctx, %q, args.Where.where())\nif err != nil {\nreturn %s{}, false, err\n}\nreturn previous, true, nil\n}\n", model.Name, model.Name, model.Name, model.Name)
+	fmt.Fprintf(buffer, "previous, ok, err := c.FindUnique(ctx, %sFindUniqueArgs{Where: args.Where})\nif err != nil || !ok {\nreturn %s{}, ok, err\n}\n_, err = c.client.db.Delete(ctx, %q, args.Where.where())\nif err != nil {\nreturn %s{}, false, err\n}\nc.client.%s.remove(previous)\nc.client.include%s(&previous, args.Include)\nreturn previous, true, nil\n}\n\n", model.Name, model.Name, model.Name, model.Name, lowerIdentifier(model.Name), model.Name)
 }
 
 func writeUniqueMethods(buffer *bytes.Buffer, model zenithdb.Model, fields []string, written map[string]struct{}) {
@@ -387,6 +440,7 @@ func writeUniqueMethods(buffer *bytes.Buffer, model zenithdb.Model, fields []str
 	written[method] = struct{}{}
 
 	fmt.Fprintf(buffer, "func (c %sClient) %s(ctx context.Context, value %s) (%s, bool, error) {\n", model.Name, method, goType(field.Kind), model.Name)
+	fmt.Fprintf(buffer, "if c.client.remote {\nrecord, ok, err := c.client.db.FindUnique(ctx, %q, map[string]any{%q: value}, nil)\nif err != nil || !ok {\nreturn %s{}, ok, err\n}\nreturn recordTo%s(record), true, nil\n}\n", model.Name, field.Name, model.Name, model.Name)
 	fmt.Fprintf(buffer, "record, ok := c.client.%s.findBy%s(value)\nreturn record, ok, nil\n}\n\n", lowerIdentifier(model.Name), exportedIdentifier(field.Name))
 }
 
@@ -401,6 +455,7 @@ func writeFindManyMethod(buffer *bytes.Buffer, model zenithdb.Model, index zenit
 	method := "FindManyBy" + exportedIdentifier(field.Name)
 
 	fmt.Fprintf(buffer, "func (c %sClient) %s(ctx context.Context, value %s, limit int) ([]%s, error) {\n", model.Name, method, goType(field.Kind), model.Name)
+	fmt.Fprintf(buffer, "if c.client.remote {\nrecords, err := c.client.db.FindMany(ctx, %q, zenithdb.Query{Where: map[string]any{%q: value}, Index: %q, Limit: limit})\nif err != nil {\nreturn nil, err\n}\nresult := make([]%s, 0, len(records))\nfor _, record := range records {\nresult = append(result, recordTo%s(record))\n}\nreturn result, nil\n}\n", model.Name, field.Name, index.Name, model.Name, model.Name)
 	fmt.Fprintf(buffer, "return c.client.%s.findManyBy%s(value, limit), nil\n}\n\n", lowerIdentifier(model.Name), exportedIdentifier(field.Name))
 }
 
@@ -479,6 +534,15 @@ func isUniqueLookupField(model zenithdb.Model, fieldName string) bool {
 	}
 	for _, index := range model.Indexes {
 		if index.Unique && len(index.Fields) == 1 && index.Fields[0] == fieldName {
+			return true
+		}
+	}
+	return false
+}
+
+func isPrimaryField(model zenithdb.Model, fieldName string) bool {
+	for _, primary := range model.PrimaryKey {
+		if primary == fieldName {
 			return true
 		}
 	}

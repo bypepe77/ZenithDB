@@ -14,9 +14,12 @@ var ErrNotFound = errors.New("record not found")
 // Options configures the database engine.
 type Options struct {
 	ConnectionURL string
+	WireURL       string
+	AuthToken     string
 	DataDir       string
 	WALPath       string
 	SyncPolicy    SyncPolicy
+	WALFormat     WALFormat
 }
 
 // DB is the ZenithDB in-process engine.
@@ -39,6 +42,9 @@ func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
 	if err := schema.validate(); err != nil {
 		return nil, err
 	}
+	if options.WireURL != "" && options.DataDir == "" && options.WALPath == "" {
+		return nil, fmt.Errorf("remote connection URL requires a remote client")
+	}
 
 	db := &DB{
 		schema: schema,
@@ -50,6 +56,9 @@ func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
 
 	if options.SyncPolicy == 0 {
 		options.SyncPolicy = SyncAlways
+	}
+	if options.WALFormat == 0 {
+		options.WALFormat = WALFormatJSONL
 	}
 
 	if options.DataDir != "" {
@@ -71,7 +80,7 @@ func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
 			}
 		}
 
-		wal, err := storage.openWAL(options.SyncPolicy)
+		wal, err := storage.openWAL(options.SyncPolicy, options.WALFormat)
 		if err != nil {
 			_ = storage.Close()
 			return nil, err
@@ -89,7 +98,7 @@ func Open(ctx context.Context, schema Schema, options Options) (*DB, error) {
 	}
 
 	if options.WALPath != "" {
-		wal, err := OpenWALWithSyncPolicy(options.WALPath, options.SyncPolicy)
+		wal, err := OpenWALWithOptions(options.WALPath, options.SyncPolicy, options.WALFormat)
 		if err != nil {
 			return nil, err
 		}

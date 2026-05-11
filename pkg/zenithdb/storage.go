@@ -73,8 +73,8 @@ func (m *storageManager) Close() error {
 	return err
 }
 
-func (m *storageManager) openWAL(syncPolicy SyncPolicy) (*WAL, error) {
-	return OpenWALWithSyncPolicy(filepath.Join(m.walDir(), m.manifest.ActiveWAL), syncPolicy)
+func (m *storageManager) openWAL(syncPolicy SyncPolicy, format WALFormat) (*WAL, error) {
+	return OpenWALWithOptions(filepath.Join(m.walDir(), m.manifest.ActiveWAL), syncPolicy, format)
 }
 
 func (m *storageManager) snapshotPath() string {

@@ -2,11 +2,14 @@ package benchmarks
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/bypepe77/ZenithDB/pkg/zenithdb"
+	"github.com/bypepe77/ZenithDB/pkg/zenithdb/remote"
+	"github.com/bypepe77/ZenithDB/pkg/zenithdb/wire"
 )
 
 const seedSize = 100_000
@@ -47,6 +50,43 @@ func BenchmarkGenericEngineFindUniqueByPrimaryKeyParallel(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkWireFindUniqueByPrimaryKey(b *testing.B) {
+	ctx := context.Background()
+	db := seedUsers(b, seedSize)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("listen: %v", err)
+	}
+	b.Cleanup(func() {
+		_ = listener.Close()
+	})
+	server := wire.NewServer(db, wire.Options{})
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	client, err := remote.Open("zenith://" + listener.Addr().String())
+	if err != nil {
+		b.Fatalf("open remote client: %v", err)
+	}
+	b.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	where := map[string]any{"id": "u4242"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, ok, err := client.FindUnique(ctx, "User", where, nil)
+		if err != nil {
+			b.Fatalf("find unique: %v", err)
+		}
+		if !ok {
+			b.Fatal("expected user")
+		}
+	}
 }
 
 func BenchmarkGenericEngineFindManyBySecondaryIndexLimit50(b *testing.B) {
