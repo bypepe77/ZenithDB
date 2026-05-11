@@ -6,14 +6,14 @@ Prisma-style schemas and generated clients.
 
 ## Prisma Schema
 
-- [Overview](prisma-schema/overview.md)
-- [Data Model](prisma-schema/data-model.md)
-- [Relations](prisma-schema/relations.md)
+- [Overview](zenit-schema/overview.md)
+- [Data Model](zenit-schema/data-model.md)
+- [Relations](zenit-schema/relations.md)
 
 ## Prisma Client
 
-- [Queries](prisma-client/queries.md)
-- [Mutations](prisma-client/mutations.md)
+- [Queries](zenit-client/queries.md)
+- [Mutations](zenit-client/mutations.md)
 
 ## Current Scope
 
