@@ -1,8 +1,17 @@
 # ZenithDB
 
-ZenithDB is an experimental database engine written in Go for applications that
-want database-style modeling without putting a general-purpose SQL engine in the
-hot path.
+**ZenithDB is a schema-compiled application database for Go: Prisma-like schema,
+generated typed clients, in-memory indexed execution, WAL persistence, and
+embedded or remote access over a binary protocol.**
+
+Status: **experimental, not production-ready**. ZenithDB is currently an engine
+and architecture project. It is useful for exploring a modern database design,
+benchmarking index-first execution paths, and building toward a serious
+application-native database, but it should not be treated as a Postgres or Redis
+replacement today.
+
+Category: **schema-compiled embedded operational database**. More casually, it
+is an application-native database engine.
 
 The project is built around one central bet:
 
@@ -14,6 +23,31 @@ That makes ZenithDB closer to a schema-compiled application database than to a
 traditional relational server. It borrows the developer experience of Prisma,
 the low-latency shape of an embedded/in-memory engine, and the deployment model
 of a remote database server.
+
+## What This Is
+
+ZenithDB is:
+
+- A database engine with schema-defined models.
+- An embedded-first in-memory store with indexes.
+- A generated-client system inspired by Prisma.
+- A durable append-only engine with WAL replay and checkpoints.
+- A remote database server when opened through `zenith://`.
+- A binary data-plane protocol with HTTP kept out of the hot path.
+
+## What This Is Not
+
+ZenithDB is not:
+
+- A SQL database.
+- A drop-in Postgres replacement.
+- A Redis-compatible cache.
+- An analytics engine.
+- A mature distributed database.
+- A production-ready transactional system.
+
+The core tradeoff is explicit: ZenithDB gives up broad generality to make known
+model operations cheaper and more predictable.
 
 ## What ZenithDB Is Optimizing For
 
@@ -97,6 +131,22 @@ execution plan.
 
 ZenithDB is split into a few focused layers:
 
+```txt
+Prisma-like schema
+        |
+        v
+Schema compiler  --->  Generated Go client
+        |                     |
+        v                     v
+ zenithdb.Schema       Model operations
+        |                     |
+        v                     v
+ In-memory engine <--- Binary wire protocol
+        |
+        v
+ WAL + checkpoints
+```
+
 - **Schema compiler**: parses the Prisma-like schema and generates typed Go
   clients.
 - **In-memory engine**: stores model records and maintains primary, unique, and
@@ -113,6 +163,32 @@ ZenithDB is split into a few focused layers:
 
 The data plane and the control plane are intentionally separate. Data operations
 use the binary protocol; HTTP is not used for the performance-critical path.
+
+## Performance Thesis
+
+ZenithDB should be judged on narrow, reproducible workloads, not vague claims.
+The performance thesis is:
+
+- If a query shape is known, avoid dynamic SQL planning.
+- If a field is hot, make it an explicit index.
+- If the app and database can share a process, remove the network hop.
+- If remote access is needed, use a compact binary protocol.
+- If the schema is known, generate typed client code instead of runtime mapping.
+
+The benchmark suite includes raw Go map baselines as a reality check. ZenithDB
+does not claim to beat Postgres or Redis in general. It aims to be competitive on
+known, index-first operational paths where a general SQL engine or generic cache
+adds unnecessary layers.
+
+Run benchmarks locally:
+
+```bash
+go test ./benchmarks -bench=. -benchmem -count=1
+```
+
+Current benchmark coverage includes primary-key reads, secondary-index reads,
+generated-client shortcuts, binary-wire reads, WAL recovery, checkpoint recovery,
+and raw map baselines.
 
 ## Execution Model
 
@@ -220,6 +296,21 @@ ZenithDB is still experimental. Important production-grade areas remain open:
 
 The project should be judged as an engine and architecture experiment, not as a
 drop-in replacement for mature production databases.
+
+## Technical Roadmap
+
+The next serious engineering milestones are:
+
+- Binary WAL as the default durable format.
+- Checksums per WAL entry.
+- WAL segment rotation and corruption recovery tests.
+- Binary snapshot format.
+- Referential integrity checks for relations.
+- Cascading relation actions.
+- Online schema migration strategy.
+- Observability metrics for query latency, WAL latency, recovery time, and
+  connection pool behavior.
+- CI with tests and benchmarks on every pull request.
 
 ## When ZenithDB Is Interesting
 
